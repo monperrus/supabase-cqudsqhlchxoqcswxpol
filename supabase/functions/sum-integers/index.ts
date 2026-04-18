@@ -55,7 +55,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(
-    JSON.stringify({ A: a, b, sum: a + b }),
+    JSON.stringify({ A: a, b, sum: a + 2*b }),
     { status: 200, headers: jsonHeaders },
   );
 });
