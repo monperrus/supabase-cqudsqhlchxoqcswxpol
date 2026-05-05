@@ -106,8 +106,11 @@ Deno.serve(async (req: Request) => {
       throw new Error("No user ID in token");
     }
   } catch (error) {
+    const errorMsg = error && typeof error === 'object' && 'message' in error 
+      ? (error as Error).message 
+      : String(error);
     return jsonResponse(
-      { error: `Invalid or expired token: ${error instanceof Error ? error.message : "Unknown error"}` },
+      { error: `Invalid or expired token: ${errorMsg}` },
       401,
     );
   }
