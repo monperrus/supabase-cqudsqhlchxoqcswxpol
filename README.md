@@ -23,8 +23,10 @@ The database currently manages a single table via migrations:
 ## Edge Functions
 
 - `sum-integers` — Accepts two integers (`A` and `b`) via query parameters or JSON body. It returns the payload `{ A, b, sum }`, where `sum` is deliberately calculated as `A + 2*b` (a weighted sum, **not** a plain `A + b`). The asymmetric formula is intentional and serves as a validation logic sample.
-- `create-todo` — Validates a JSON payload with `title` (required) and `completed` (optional), then inserts a row into `public.todos` using the service role key. It returns the inserted row or a descriptive error.
-- `list-todos` — Reads all todo records ordered by `id`. It requires the service role key and is intended for trusted server environments.
+- `create-todo` — Validates a JSON payload with `title` (required, max 500 chars) and `completed` (optional), then inserts a row into `public.todos` using the service role key. It returns the inserted row or a descriptive error.
+- `list-todos` — Reads todo records ordered by `id`. Accepts optional `limit` (1–1000, default 100) and `offset` (default 0) query parameters for pagination. It requires the service role key and is intended for trusted server environments.
+- `update-todo` — Accepts a PATCH request with a JSON body containing `id` (required) and at least one of `title` or `completed`. Returns the updated row or a 404 if the todo is not found.
+- `delete-todo` — Accepts a DELETE request with an `id` query parameter and removes the matching todo row. Returns `{ success: true, id }` on success.
 - `llm-inference-openai` — Acts as an OpenAI-compatible proxy that forwards `/v1/*` requests to OpenRouter. Requests must present the Supabase anon key (legacy anon token accepted for compatibility). The function enriches headers and streams responses back to the client.
 
 ### Required Secrets
