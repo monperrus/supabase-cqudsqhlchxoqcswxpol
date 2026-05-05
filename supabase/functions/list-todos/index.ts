@@ -44,6 +44,8 @@ Deno.serve(async (req: Request) => {
     },
   });
 
+  // TODO: add pagination (limit/offset or cursor-based) so large datasets don't stall the function.
+  // TODO: add an authentication check so only authorized callers can read todos.
   const { data, error } = await supabase
     .from("todos")
     .select("id, title, completed, created_at")

@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
+// TODO: update skillMarkdown to document the todo-mcp-server endpoint and the update/delete operations.
 const skillMarkdown = `# Todo API Skill
 
 ## Overview

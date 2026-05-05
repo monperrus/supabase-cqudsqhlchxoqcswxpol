@@ -66,6 +66,8 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  // TODO: enforce a maximum title length (e.g. 500 characters) to prevent oversized payloads.
+
   if (completed !== undefined && typeof completed !== "boolean") {
     return jsonResponse(
       { error: 'Field "completed" must be a boolean when provided.' },

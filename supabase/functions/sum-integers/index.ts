@@ -54,6 +54,7 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  // TODO: the formula `A + 2*b` looks like a bug — verify intent and change to `a + b` if this is meant to be a plain sum.
   return new Response(
     JSON.stringify({ A: a, b, sum: a + 2*b }),
     { status: 200, headers: jsonHeaders },

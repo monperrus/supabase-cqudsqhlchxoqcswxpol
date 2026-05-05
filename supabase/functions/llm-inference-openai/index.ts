@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const functionSlug = "llm-inference-openai";
 const openRouterBaseUrl = "https://openrouter.ai/api";
+// TODO: move legacyAnonKey out of source code — store it as a Supabase secret (e.g. LEGACY_ANON_KEY) and read via Deno.env.get().
 const legacyAnonKey =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNxdWRzcWhsY2h4b3Fjc3d4cG9sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1MDc5NTEsImV4cCI6MjA5MjA4Mzk1MX0.iIhoW2v5IQN7AT8nj4qWjo50FqJH2LgEQf_2EjITg2A";
 
@@ -151,6 +152,7 @@ Deno.serve(async (req: Request) => {
   const upstreamUrl = new URL(`${openRouterBaseUrl}${targetPath}`);
   upstreamUrl.search = url.search;
 
+  // TODO: add rate limiting to protect the OpenRouter quota from abuse.
   let upstreamResponse: Response;
   try {
     upstreamResponse = await fetch(upstreamUrl, {

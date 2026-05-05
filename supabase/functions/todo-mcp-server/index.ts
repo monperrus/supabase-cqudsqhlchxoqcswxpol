@@ -134,6 +134,8 @@ async function listTools(req: MCPRequest): Promise<MCPResponse> {
   });
 }
 
+// TODO: add an authorization check (e.g. validate the Supabase anon key in the Authorization header) before processing any tool call.
+// TODO: list_todos orders by created_at DESC while the list-todos function orders by id ASC — align both to the same ordering.
 async function callTool(req: MCPRequest): Promise<MCPResponse> {
   const { name, arguments: args } = req.params as {
     name: string;
@@ -199,6 +201,8 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
         const updateData: Record<string, unknown> = {};
         if (title !== undefined) updateData.title = title.trim();
         if (completed !== undefined) updateData.completed = completed;
+
+        // TODO: return an error (code -32602) when updateData is empty — no fields were provided to update.
 
         const { data, error } = await supabase
           .from("todos")
