@@ -398,6 +398,11 @@ Deno.serve(async (req: Request) => {
   const u = new URL(req.url);
   const sub = u.pathname.slice(FUNCTION_PATH.length) || "/";
 
+  // Temporary debug endpoint — remove after diagnosis
+  if (u.pathname.endsWith("/debug")) {
+    return jsonResp({ url: req.url, pathname: u.pathname, sub, method: req.method, fpLen: FUNCTION_PATH.length });
+  }
+
   if (sub === "/.well-known/oauth-protected-resource" && req.method === "GET") return handleResourceMetadata(req);
   if (sub === "/.well-known/oauth-authorization-server" && req.method === "GET") return handleAuthServerMetadata(req);
   if (sub === "/register" && req.method === "POST") return handleRegister(req);
