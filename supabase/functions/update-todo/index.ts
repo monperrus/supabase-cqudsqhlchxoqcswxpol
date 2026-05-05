@@ -35,23 +35,31 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  const authHeader = req.headers.get("authorization");
-  let userId: string | null = null;
 
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    const token = authHeader.slice(7);
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      userId = payload.sub;
-    } catch {
-      return jsonResponse(
-        { error: "Invalid authorization token." },
-        401,
-      );
-    }
-  } else {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader) {
     return jsonResponse(
       { error: "Authorization required. Please sign in with GitHub." },
+      401,
+    );
+  }
+
+  let userId: string | null = null;
+  try {
+    const token = authHeader.replace("Bearer ", "");
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      throw new Error("Invalid JWT format");
+    }
+    const payload = JSON.parse(atob(parts[1]));
+    userId = payload.sub;
+    
+    if (!userId) {
+      throw new Error("No user ID in token");
+    }
+  } catch (error) {
+    return jsonResponse(
+      { error: `Invalid or expired token: ${error instanceof Error ? error.message : "Unknown error"}` },
       401,
     );
   }
