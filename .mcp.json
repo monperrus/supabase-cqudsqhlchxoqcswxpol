@@ -4,7 +4,7 @@
       "type": "http",
       "url": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server",
       "auth": {
-        "type": "none"
+        "type": "github"
       }
     }
   }
