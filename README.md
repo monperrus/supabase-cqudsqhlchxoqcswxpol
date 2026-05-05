@@ -49,6 +49,16 @@ supabase functions secrets set --project-ref <project-ref> \
   OPENROUTER_API_KEY=...
 ```
 
+See `.env.example` for a full list of supported variables including the optional `CORS_ALLOWED_ORIGIN` secret.
+
+## Running Tests
+
+Unit tests are co-located with the edge functions and use Deno's built-in test runner. Run all tests from the repository root:
+
+```bash
+deno test supabase/functions/ --allow-env
+```
+
 ## License
 
 MIT
