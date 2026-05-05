@@ -3,10 +3,41 @@
 
 import { joinSession } from "@github/copilot-sdk/extension";
 
+const SUPABASE_URL = "https://cqudsqhlchxoqcswxpol.supabase.co";
+const GITHUB_CLIENT_ID = "Ov23liKNcP9aRVLsTHlo";
+
+// Store JWT token in memory (persists during session)
+let jwtToken = null;
+
+async function getAuthToken() {
+    if (jwtToken) {
+        return jwtToken;
+    }
+    
+    // Try to get token from environment variable (for CI/automation)
+    const envToken = process.env.SUPABASE_ACCESS_TOKEN;
+    if (envToken) {
+        jwtToken = envToken;
+        return jwtToken;
+    }
+    
+    // For CLI, user needs to authenticate via the web app
+    throw new Error(
+        "Not authenticated. Please sign in at https://monperrus.github.io/todo-ui/ " +
+        "and provide your token via SUPABASE_ACCESS_TOKEN environment variable, " +
+        "or set it in the MCP configuration."
+    );
+}
+
 async function callMCP(method, params = {}) {
-    const response = await fetch("https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server", {
+    const token = await getAuthToken();
+    
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/todo-mcp-server`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({
             jsonrpc: "2.0",
             id: Date.now(),
@@ -14,12 +45,49 @@ async function callMCP(method, params = {}) {
             params: { name: method, arguments: params }
         })
     });
+    
     const data = await response.json();
+    
+    if (!response.ok) {
+        const error = data.error || data;
+        throw new Error(
+            typeof error === 'object' ? error.message : String(error)
+        );
+    }
+    
     return data.result;
 }
 
 const session = await joinSession({
     tools: [
+        {
+            name: "auth-login",
+            description: "Authenticate with GitHub to access your todos. Sets SUPABASE_ACCESS_TOKEN.",
+            parameters: {
+                type: "object",
+                properties: {
+                    token: {
+                        type: "string",
+                        description: "Your Supabase access token from https://monperrus.github.io/todo-ui/",
+                    },
+                },
+                required: ["token"],
+            },
+            skipPermission: true,
+            handler: async (args) => {
+                try {
+                    jwtToken = args.token;
+                    
+                    // Verify token by calling list_todos
+                    const testResult = await callMCP("list_todos");
+                    
+                    return `✓ Authenticated successfully! You have ${testResult?.data?.length || 0} todos.`;
+                } catch (error) {
+                    jwtToken = null;
+                    return `Error: ${error instanceof Error ? error.message : String(error)}`;
+                }
+            },
+        },
         {
             name: "list-todos",
             description: "List all todos from the MCP server",
