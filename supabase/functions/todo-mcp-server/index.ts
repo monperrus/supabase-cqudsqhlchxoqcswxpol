@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-// Supabase strips /functions/v1 from req.url internally; externally the path is /functions/v1/todo-mcp-server
+// Supabase strips /functions/v1 from req.url internally
 const FUNCTION_PATH = "/todo-mcp-server";
 const PUBLIC_FUNCTION_PATH = "/functions/v1/todo-mcp-server";
 
@@ -22,27 +22,92 @@ function redirect(url: string) {
   return new Response(null, { status: 302, headers: { Location: url, ...cors } });
 }
 
+// ---- Crypto utilities ----
+
+function bytesToB64url(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function b64urlToBytes(s: string): Uint8Array {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4);
+  const bin = atob(padded);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+function textToB64url(s: string): string {
+  return bytesToB64url(new TextEncoder().encode(s));
+}
+
 async function sha256b64url(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  let s = "";
-  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  return bytesToB64url(new Uint8Array(buf));
 }
 
-function randomB64url(bytes = 32): string {
-  const arr = new Uint8Array(bytes);
-  crypto.getRandomValues(arr);
-  let s = "";
-  for (const b of arr) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+function randomB64url(n = 32): string {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return bytesToB64url(b);
 }
 
-function serviceClient() {
-  return createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    { auth: { autoRefreshToken: false, persistSession: false } },
+async function hmacB64url(data: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
   );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return bytesToB64url(new Uint8Array(sig));
+}
+
+// Lightweight signed JWT (HS256) for passing OAuth state through redirects
+async function signJwt(payload: Record<string, unknown>, ttl = 600): Promise<string> {
+  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const now = Math.floor(Date.now() / 1000);
+  const h = textToB64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const p = textToB64url(JSON.stringify({ ...payload, iat: now, exp: now + ttl }));
+  const sig = await hmacB64url(`${h}.${p}`, secret);
+  return `${h}.${p}.${sig}`;
+}
+
+async function verifyJwt(token: string): Promise<Record<string, unknown> | null> {
+  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const expected = await hmacB64url(`${parts[0]}.${parts[1]}`, secret);
+  if (expected !== parts[2]) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1])));
+    if (payload.exp < Date.now() / 1000) return null;
+    return payload;
+  } catch { return null; }
+}
+
+// AES-GCM encrypt plaintext using code_challenge as key material.
+// auth_code = encrypt(access_token, key=SHA256(code_challenge))
+// Decryption requires code_verifier so the client can compute code_challenge.
+async function encryptWithChallenge(plaintext: string, codeChallenge: string): Promise<string> {
+  const keyBits = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeChallenge));
+  const key = await crypto.subtle.importKey("raw", keyBits, { name: "AES-GCM" }, false, ["encrypt"]);
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plaintext));
+  const out = new Uint8Array(12 + cipher.byteLength);
+  out.set(iv);
+  out.set(new Uint8Array(cipher), 12);
+  return bytesToB64url(out);
+}
+
+async function decryptWithVerifier(authCode: string, codeVerifier: string): Promise<string | null> {
+  try {
+    const codeChallenge = await sha256b64url(codeVerifier);
+    const keyBits = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeChallenge));
+    const key = await crypto.subtle.importKey("raw", keyBits, { name: "AES-GCM" }, false, ["decrypt"]);
+    const combined = b64urlToBytes(authCode);
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: combined.slice(0, 12) }, key, combined.slice(12),
+    );
+    return new TextDecoder().decode(plain);
+  } catch { return null; }
 }
 
 // ---- OAuth discovery ----
@@ -66,10 +131,9 @@ function handleAuthServerMetadata(req: Request) {
   });
 }
 
-// Dynamic client registration — accept any public client
 async function handleRegister(req: Request) {
   let meta: Record<string, unknown> = {};
-  try { meta = await req.json(); } catch { /* no body */ }
+  try { meta = await req.json(); } catch { /* no body is fine */ }
   return jsonResp({
     client_id: randomB64url(16),
     client_secret_expires_at: 0,
@@ -80,7 +144,7 @@ async function handleRegister(req: Request) {
   });
 }
 
-// Step 1: MCP client → our /authorize → redirect to GitHub via Supabase PKCE
+// Step 1: MCP client → /authorize → signs state JWT, starts Supabase GitHub OAuth
 async function handleAuthorize(req: Request): Promise<Response> {
   const p = new URL(req.url).searchParams;
   const codeChallenge = p.get("code_challenge");
@@ -92,57 +156,58 @@ async function handleAuthorize(req: Request): Promise<Response> {
   if (!codeChallenge || !redirectUri || p.get("response_type") !== "code") {
     return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
   }
-
-  const supabaseCodeVerifier = randomB64url(32);
-  const supabaseCodeChallenge = await sha256b64url(supabaseCodeVerifier);
-
-  const db = serviceClient();
-  const { data, error } = await db.from("mcp_auth_codes").insert({
-    mcp_code_challenge: codeChallenge,
-    mcp_code_challenge_method: codeChallengeMethod,
-    mcp_redirect_uri: redirectUri,
-    mcp_client_id: clientId,
-    mcp_state: state,
-    supabase_code_verifier: supabaseCodeVerifier,
-  }).select("id").single();
-
-  if (error || !data) {
-    return jsonResp({ error: "server_error", error_description: "DB insert failed" }, 500);
+  if (codeChallengeMethod !== "S256") {
+    return jsonResp({ error: "invalid_request", error_description: "Only S256 supported" }, 400);
   }
 
-  const callbackUrl = `${baseUrl(req)}/callback?session_id=${data.id}`;
+  // Derive a deterministic supabase code_verifier from code_challenge + server secret.
+  // This avoids storing anything in the DB.
+  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const supabaseCodeVerifier = await hmacB64url(codeChallenge, secret);
+  const supabaseCodeChallenge = await sha256b64url(supabaseCodeVerifier);
+
+  // Encode all MCP params in a signed JWT passed through the OAuth state
+  const stateJwt = await signJwt({
+    code_challenge: codeChallenge,
+    mcp_redirect_uri: redirectUri,
+    mcp_state: state,
+    mcp_client_id: clientId,
+  });
+
+  const callbackUrl = `${baseUrl(req)}/callback`;
   const authUrl = new URL(`${Deno.env.get("SUPABASE_URL")}/auth/v1/authorize`);
   authUrl.searchParams.set("provider", "github");
-  authUrl.searchParams.set("redirect_to", callbackUrl);
+  authUrl.searchParams.set("redirect_to", `${callbackUrl}?s=${encodeURIComponent(stateJwt)}`);
   authUrl.searchParams.set("code_challenge", supabaseCodeChallenge);
   authUrl.searchParams.set("code_challenge_method", "S256");
 
   return redirect(authUrl.toString());
 }
 
-// Step 2: Supabase redirects here after GitHub OAuth; exchange code → token; redirect to MCP client
+// Step 2: Supabase redirects here → exchange Supabase code → encrypt token → redirect to MCP client
 async function handleCallback(req: Request): Promise<Response> {
   const p = new URL(req.url).searchParams;
-  const sessionId = p.get("session_id");
-  const code = p.get("code"); // Supabase PKCE auth code
+  const stateJwt = p.get("s");
+  const supabaseCode = p.get("code");
 
-  if (!sessionId || !code) {
-    return jsonResp({ error: "invalid_request", error_description: "Missing session_id or code" }, 400);
+  if (!stateJwt || !supabaseCode) {
+    return new Response("<h1>Error</h1><p>Missing state or code parameter.</p>", {
+      status: 400, headers: { "Content-Type": "text/html" },
+    });
   }
 
-  const db = serviceClient();
-  const { data: session, error: lookupErr } = await db.from("mcp_auth_codes")
-    .select("*")
-    .eq("id", sessionId)
-    .is("used_at", null)
-    .gt("expires_at", new Date().toISOString())
-    .single();
-
-  if (lookupErr || !session) {
-    return jsonResp({ error: "invalid_request", error_description: "Invalid or expired session" }, 400);
+  const st = await verifyJwt(stateJwt);
+  if (!st) {
+    return new Response("<h1>Error</h1><p>Invalid or expired OAuth session. Please try again.</p>", {
+      status: 400, headers: { "Content-Type": "text/html" },
+    });
   }
 
-  // Exchange Supabase auth code for access_token using PKCE
+  const codeChallenge = st.code_challenge as string;
+  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const supabaseCodeVerifier = await hmacB64url(codeChallenge, secret);
+
+  // Exchange Supabase auth code for access_token
   const tokenRes = await fetch(
     `${Deno.env.get("SUPABASE_URL")}/auth/v1/token?grant_type=pkce`,
     {
@@ -151,68 +216,60 @@ async function handleCallback(req: Request): Promise<Response> {
         "Content-Type": "application/json",
         "apikey": Deno.env.get("SUPABASE_ANON_KEY")!,
       },
-      body: JSON.stringify({
-        auth_code: code,
-        code_verifier: session.supabase_code_verifier,
-      }),
+      body: JSON.stringify({ auth_code: supabaseCode, code_verifier: supabaseCodeVerifier }),
     },
   );
 
   if (!tokenRes.ok) {
     const err = await tokenRes.text();
-    return jsonResp({ error: "server_error", error_description: `Supabase token exchange failed: ${err}` }, 500);
+    return new Response(`<h1>Auth Error</h1><pre>${err}</pre>`, {
+      status: 500, headers: { "Content-Type": "text/html" },
+    });
   }
 
   const { access_token } = await tokenRes.json();
   if (!access_token) {
-    return jsonResp({ error: "server_error", error_description: "No access_token in Supabase response" }, 500);
+    return new Response("<h1>Error</h1><p>No access token returned.</p>", {
+      status: 500, headers: { "Content-Type": "text/html" },
+    });
   }
 
-  await db.from("mcp_auth_codes").update({ supabase_access_token: access_token }).eq("id", sessionId);
+  // Encrypt access_token with code_challenge as key material.
+  // Only the MCP client (who holds code_verifier) can decrypt it.
+  const authCode = await encryptWithChallenge(access_token, codeChallenge);
 
-  // Redirect MCP client back with our auth code (= sessionId)
-  const dest = new URL(session.mcp_redirect_uri);
-  dest.searchParams.set("code", sessionId);
-  if (session.mcp_state) dest.searchParams.set("state", session.mcp_state);
+  const dest = new URL(st.mcp_redirect_uri as string);
+  dest.searchParams.set("code", authCode);
+  if (st.mcp_state) dest.searchParams.set("state", st.mcp_state as string);
 
   return redirect(dest.toString());
 }
 
-// Step 3: MCP client exchanges our auth code for the Supabase access_token
+// Step 3: MCP client sends code_verifier → decrypt auth code → return access_token
 async function handleToken(req: Request): Promise<Response> {
   const text = await req.text();
-  const body = new URLSearchParams(text);
-
-  const grantType = body.get("grant_type");
-  const code = body.get("code");
-  const codeVerifier = body.get("code_verifier");
+  // Accept both form-encoded and JSON bodies
+  let grantType: string | null, code: string | null, codeVerifier: string | null;
+  if ((req.headers.get("content-type") ?? "").includes("application/json")) {
+    try {
+      const j = JSON.parse(text);
+      grantType = j.grant_type; code = j.code; codeVerifier = j.code_verifier;
+    } catch { return jsonResp({ error: "invalid_request" }, 400); }
+  } else {
+    const b = new URLSearchParams(text);
+    grantType = b.get("grant_type"); code = b.get("code"); codeVerifier = b.get("code_verifier");
+  }
 
   if (grantType !== "authorization_code" || !code || !codeVerifier) {
     return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
   }
 
-  const db = serviceClient();
-  const { data: session, error } = await db.from("mcp_auth_codes")
-    .select("*")
-    .eq("id", code)
-    .is("used_at", null)
-    .gt("expires_at", new Date().toISOString())
-    .not("supabase_access_token", "is", null)
-    .single();
-
-  if (error || !session) {
-    return jsonResp({ error: "invalid_grant", error_description: "Invalid or expired code" }, 400);
-  }
-
-  // Verify PKCE
-  const computed = await sha256b64url(codeVerifier);
-  if (computed !== session.mcp_code_challenge) {
+  const accessToken = await decryptWithVerifier(code, codeVerifier);
+  if (!accessToken) {
     return jsonResp({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
   }
 
-  await db.from("mcp_auth_codes").update({ used_at: new Date().toISOString() }).eq("id", code);
-
-  return jsonResp({ access_token: session.supabase_access_token, token_type: "bearer" });
+  return jsonResp({ access_token: accessToken, token_type: "bearer" });
 }
 
 // ---- MCP JSON-RPC ----
@@ -220,16 +277,12 @@ async function handleToken(req: Request): Promise<Response> {
 interface MCPReq { jsonrpc: string; id?: string | number; method: string; params?: Record<string, unknown> }
 interface MCPResp { jsonrpc: string; id: string | number; result?: unknown; error?: { code: number; message: string } }
 
-function mcpOk(id: string | number, result: unknown): MCPResp {
-  return { jsonrpc: "2.0", id, result };
-}
-function mcpErr(id: string | number, code: number, message: string): MCPResp {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
+const mcpOk = (id: string | number, result: unknown): MCPResp => ({ jsonrpc: "2.0", id, result });
+const mcpErr = (id: string | number, code: number, message: string): MCPResp => ({
+  jsonrpc: "2.0", id, error: { code, message },
+});
 
 async function handleMCP(req: Request): Promise<Response> {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
-
   if (req.method !== "POST") return jsonResp({ error: "Use POST" }, 405);
   if (!(req.headers.get("content-type") ?? "").includes("application/json")) {
     return jsonResp({ error: "Content-Type must be application/json" }, 415);
@@ -237,12 +290,11 @@ async function handleMCP(req: Request): Promise<Response> {
 
   let mcp: MCPReq;
   try { mcp = await req.json(); } catch { return jsonResp({ error: "Invalid JSON" }, 400); }
-
   if (mcp.jsonrpc !== "2.0" || !mcp.method) return jsonResp({ error: "Invalid JSON-RPC" }, 400);
 
   const reqId = mcp.id ?? Date.now();
 
-  // Verify auth for all requests
+  // Verify Bearer token using Supabase auth
   const authHeader = req.headers.get("authorization");
   let userId: string | null = null;
 
@@ -259,10 +311,9 @@ async function handleMCP(req: Request): Promise<Response> {
 
   if (!userId) {
     const resourceMeta = `${baseUrl(req)}/.well-known/oauth-protected-resource`;
-    const wwwAuth = `Bearer resource_metadata="${resourceMeta}"`;
     if (mcp.id == null) return new Response(null, { status: 204 });
     return jsonResp(mcpErr(reqId, -32600, "Authorization required"), 401, {
-      "WWW-Authenticate": wwwAuth,
+      "WWW-Authenticate": `Bearer resource_metadata="${resourceMeta}"`,
     });
   }
 
@@ -293,6 +344,14 @@ async function handleMCP(req: Request): Promise<Response> {
   return jsonResp(resp);
 }
 
+function serviceClient() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { auth: { autoRefreshToken: false, persistSession: false } },
+  );
+}
+
 async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Promise<MCPResp> {
   const { name, arguments: args = {} } = mcp.params as { name: string; arguments?: Record<string, unknown> };
   const db = serviceClient();
@@ -305,20 +364,19 @@ async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Pr
         .order("created_at", { ascending: false });
       if (error) throw new Error(error.message);
       if (!data?.length) return mcpOk(reqId, { content: [{ type: "text", text: "No todos found." }] });
-      const text = data.map((t: any, i: number) => `${i + 1}. ${t.completed ? "✅" : "⏳"} ${t.title}`).join("\n");
+      const text = data.map((t: { completed: boolean; title: string }, i: number) =>
+        `${i + 1}. ${t.completed ? "✅" : "⏳"} ${t.title}`).join("\n");
       return mcpOk(reqId, { content: [{ type: "text", text }] });
     }
-
     case "create_todo": {
       const title = (args.title as string)?.trim();
       if (!title) return mcpErr(reqId, -32602, "title is required");
       const { data, error } = await db.from("todos")
         .insert({ title, completed: args.completed ?? false, user_id: userId })
-        .select("id, title, completed, created_at").single();
+        .select("id, title").single();
       if (error) throw new Error(error.message);
       return mcpOk(reqId, { content: [{ type: "text", text: `Created: "${data.title}" (ID: ${data.id})` }] });
     }
-
     case "update_todo": {
       const id = args.id as string;
       if (!id) return mcpErr(reqId, -32602, "id is required");
@@ -327,11 +385,10 @@ async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Pr
       if (args.completed !== undefined) update.completed = args.completed;
       const { data, error } = await db.from("todos")
         .update(update).eq("id", id).eq("user_id", userId)
-        .select("id, title, completed").single();
+        .select("title, completed").single();
       if (error) throw new Error(error.message);
       return mcpOk(reqId, { content: [{ type: "text", text: `Updated: ${data.completed ? "✅" : "⏳"} ${data.title}` }] });
     }
-
     case "delete_todo": {
       const id = args.id as string;
       if (!id) return mcpErr(reqId, -32602, "id is required");
@@ -339,7 +396,6 @@ async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Pr
       if (error) throw new Error(error.message);
       return mcpOk(reqId, { content: [{ type: "text", text: `Deleted todo ID: ${id}` }] });
     }
-
     default:
       return mcpErr(reqId, -32601, `Unknown tool: ${name}`);
   }
@@ -348,7 +404,7 @@ async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Pr
 const TOOLS = [
   {
     name: "list_todos",
-    description: "List all todos from the database",
+    description: "List all todos",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -357,8 +413,8 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "The title of the todo" },
-        completed: { type: "boolean", description: "Whether completed (default: false)" },
+        title: { type: "string" },
+        completed: { type: "boolean" },
       },
       required: ["title"],
     },
@@ -369,9 +425,9 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        id: { type: "string", description: "The ID of the todo to update" },
-        title: { type: "string", description: "New title (optional)" },
-        completed: { type: "boolean", description: "New completed status (optional)" },
+        id: { type: "string" },
+        title: { type: "string" },
+        completed: { type: "boolean" },
       },
       required: ["id"],
     },
@@ -381,7 +437,7 @@ const TOOLS = [
     description: "Delete a todo",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string", description: "The ID of the todo to delete" } },
+      properties: { id: { type: "string" } },
       required: ["id"],
     },
   },
@@ -391,16 +447,13 @@ const TOOLS = [
 
 function baseUrl(req: Request): string {
   const u = new URL(req.url);
-  // Always return public https URL with full path
   return `https://${u.host}${PUBLIC_FUNCTION_PATH}`;
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
-  const u = new URL(req.url);
-  const sub = u.pathname.slice(FUNCTION_PATH.length) || "/";
-
+  const sub = new URL(req.url).pathname.slice(FUNCTION_PATH.length) || "/";
 
   if (sub === "/.well-known/oauth-protected-resource" && req.method === "GET") return handleResourceMetadata(req);
   if (sub === "/.well-known/oauth-authorization-server" && req.method === "GET") return handleAuthServerMetadata(req);
