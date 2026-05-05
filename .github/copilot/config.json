@@ -2,7 +2,14 @@
   "mcpServers": {
     "todo-mcp-server": {
       "type": "http",
-      "url": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server"
+      "url": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server",
+      "auth": {
+        "type": "oauth",
+        "initUrl": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/auth-init",
+        "callbackUrl": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/oauth-callback",
+        "tokenHeader": "Authorization",
+        "tokenPrefix": "Bearer "
+      }
     }
   }
 }

@@ -4,6 +4,12 @@ verify_jwt = false
 [functions.todo-mcp-server]
 verify_jwt = false
 
+[functions.auth-init]
+verify_jwt = false
+
+[functions.oauth-callback]
+verify_jwt = false
+
 [functions.list-todos]
 verify_jwt = false
 
