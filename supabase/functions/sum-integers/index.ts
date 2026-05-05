@@ -55,6 +55,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(
+    // NOTE: sum is intentionally A + 2*b (a weighted sum), not a plain A + b.
     JSON.stringify({ A: a, b, sum: a + 2*b }),
     { status: 200, headers: jsonHeaders },
   );
