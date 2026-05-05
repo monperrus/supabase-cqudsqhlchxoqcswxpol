@@ -53,13 +53,19 @@ Deno.serve(async (req: Request) => {
     const token = authHeader.replace("Bearer ", "");
     const parts = token.split(".");
     if (parts.length !== 3) {
-      throw new Error("Invalid JWT format");
+      throw new Error("Invalid JWT format (expected 3 parts)");
     }
-    const payload = JSON.parse(atob(parts[1]));
+    
+    // Decode URL-safe base64 (JWT format)
+    const payloadBase64 = parts[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+    const padding = '='.repeat((4 - (payloadBase64.length % 4)) % 4);
+    const payload = JSON.parse(atob(payloadBase64 + padding));
     userId = payload.sub;
     
     if (!userId) {
-      throw new Error("No user ID in token");
+      throw new Error("No user ID (sub) in token");
     }
   } catch (error) {
     const errorMsg = error && typeof error === 'object' && 'message' in error 
