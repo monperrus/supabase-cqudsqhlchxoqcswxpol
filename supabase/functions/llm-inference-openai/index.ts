@@ -5,8 +5,10 @@ const openRouterBaseUrl = "https://openrouter.ai/api";
 const legacyAnonKey =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNxdWRzcWhsY2h4b3Fjc3d4cG9sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1MDc5NTEsImV4cCI6MjA5MjA4Mzk1MX0.iIhoW2v5IQN7AT8nj4qWjo50FqJH2LgEQf_2EjITg2A";
 
+const corsOrigin = Deno.env.get("CORS_ALLOWED_ORIGIN") ?? "*";
+
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": corsOrigin,
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, accept, openai-beta",
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
