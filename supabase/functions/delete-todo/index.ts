@@ -56,15 +56,24 @@ Deno.serve(async (req: Request) => {
     },
   });
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("todos")
     .delete()
-    .eq("id", id);
+    .eq("id", id)
+    .select("id")
+    .maybeSingle();
 
   if (error) {
     return jsonResponse(
       { error: "Failed to delete todo.", details: error.message },
       500,
+    );
+  }
+
+  if (!data) {
+    return jsonResponse(
+      { error: `Todo with id "${id}" not found.` },
+      404,
     );
   }
 
