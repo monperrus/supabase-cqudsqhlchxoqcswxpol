@@ -1,9 +1,5 @@
 {
   "mcpServers": {
-    "supabase": {
-      "type": "http",
-      "url": "https://mcp.supabase.com/mcp?project_ref=cqudsqhlchxoqcswxpol"
-    },
     "todo-mcp-server": {
       "type": "http",
       "url": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server",

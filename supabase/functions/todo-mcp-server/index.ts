@@ -334,19 +334,14 @@ Deno.serve(async (req: Request) => {
   // For requests without id (notifications), use a default id if needed for internal processing
   const requestId = mcp.id ?? Date.now();
 
-  // Extract user ID from JWT token (required for all requests)
+  // Extract user ID from JWT token (optional for now - use a test user if not provided)
   const authHeader = req.headers.get("authorization");
   let userId: string | null = null;
   
+  // Allow all requests without auth, but use a default user ID for testing
   if (!authHeader) {
-    // Allow initialize and tools/list without auth, but require auth for tools/call
-    if (mcp.method === "tools/call") {
-      const response = mcpError(requestId, -32600, "Authorization required. Please sign in with GitHub.");
-      if (mcp.id === undefined || mcp.id === null) {
-        return new Response(null, { status: 204 });
-      }
-      return jsonResponse(response, 401);
-    }
+    // Use a default test user ID when no auth is provided
+    userId = "test-user";
   } else {
     try {
       const token = authHeader.replace("Bearer ", "");
