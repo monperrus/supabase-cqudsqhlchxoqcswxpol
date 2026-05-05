@@ -84,19 +84,6 @@ Deno.serve(async (req: Request) => {
     .eq("user_id", userId)
     .order("id", { ascending: true });
 
-  const supabase = createClient(supabaseUrl, serviceRoleKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-
-  const { data, error } = await supabase
-    .from("todos")
-    .select("id, title, completed, created_at")
-    .eq("user_id", userId)
-    .order("id", { ascending: true });
-
   if (error) {
     return jsonResponse(
       { error: "Failed to list todos.", details: error.message },
