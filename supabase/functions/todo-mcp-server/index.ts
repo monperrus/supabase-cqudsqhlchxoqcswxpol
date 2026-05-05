@@ -163,7 +163,25 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           .order("created_at", { ascending: false });
 
         if (error) throw new Error(error.message);
-        return mcpResult(req.id, { todos: data });
+        
+        if (!data || data.length === 0) {
+          return mcpResult(req.id, {
+            success: true,
+            data: [],
+            text: "No todos found."
+          });
+        }
+        
+        const formatted = data.map((t: any, i: number) => {
+          const status = t.completed ? "✅" : "⏳";
+          return `${i + 1}. ${status} ${t.title}`;
+        }).join("\n");
+        
+        return mcpResult(req.id, {
+          success: true,
+          data: data,
+          text: formatted
+        });
       }
 
       case "create_todo": {
@@ -184,7 +202,11 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           .single();
 
         if (error) throw new Error(error.message);
-        return mcpResult(req.id, { todo: data });
+        return mcpResult(req.id, {
+          success: true,
+          data: data,
+          text: `Created todo: "${data.title}" (ID: ${data.id})`
+        });
       }
 
       case "update_todo": {
@@ -208,7 +230,12 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           .single();
 
         if (error) throw new Error(error.message);
-        return mcpResult(req.id, { todo: data });
+        const status = data.completed ? "✅" : "⏳";
+        return mcpResult(req.id, {
+          success: true,
+          data: data,
+          text: `Updated todo: ${status} ${data.title}`
+        });
       }
 
       case "delete_todo": {
@@ -224,7 +251,11 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           .eq("id", id);
 
         if (error) throw new Error(error.message);
-        return mcpResult(req.id, { success: true });
+        return mcpResult(req.id, {
+          success: true,
+          data: { id: id },
+          text: `Deleted todo with ID: ${id}`
+        });
       }
 
       default:
@@ -285,19 +316,15 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  if (mcp.id === undefined || mcp.id === null) {
-    return jsonResponse(
-      { error: "Invalid JSON-RPC request: missing id" },
-      400,
-    );
-  }
-
   if (!mcp.method || typeof mcp.method !== "string") {
     return jsonResponse(
       { error: "Invalid JSON-RPC request: missing or invalid method" },
       400,
     );
   }
+
+  // For requests without id (notifications), use a default id if needed for internal processing
+  const requestId = mcp.id ?? Date.now();
 
   let response: MCPResponse;
   try {
@@ -312,11 +339,16 @@ Deno.serve(async (req: Request) => {
         response = await callTool(mcp);
         break;
       default:
-        response = mcpError(mcp.id, -32601, `Unknown method: ${mcp.method}`);
+        response = mcpError(requestId, -32601, `Unknown method: ${mcp.method}`);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    response = mcpError(mcp.id, -32603, `Internal error: ${message}`);
+    response = mcpError(requestId, -32603, `Internal error: ${message}`);
+  }
+
+  // Only return response if the original request had an id
+  if (mcp.id === undefined || mcp.id === null) {
+    return new Response(null, { status: 204 });
   }
 
   return jsonResponse(response, 200);
