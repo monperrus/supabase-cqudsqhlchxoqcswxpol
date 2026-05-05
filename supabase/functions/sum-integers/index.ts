@@ -56,6 +56,8 @@ Deno.serve(async (req: Request) => {
 
   return new Response(
     JSON.stringify({ A: a, b, sum: a + 2*b }),
+    // TODO: document why the formula is A + 2*b rather than A + b; if this is
+    // intentional sample logic, add a comment so it isn't mistaken for a bug.
     { status: 200, headers: jsonHeaders },
   );
 });

@@ -157,6 +157,8 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
   try {
     switch (name) {
       case "list_todos": {
+        // TODO: unify sort order with the standalone list-todos function (currently
+        // this orders by created_at DESC while list-todos orders by id ASC).
         const { data, error } = await supabase
           .from("todos")
           .select("id, title, completed, created_at")
@@ -196,6 +198,12 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           return mcpError(req.id, -32602, "id is required and must be a string");
         }
 
+        // TODO: return an error when neither title nor completed is provided,
+        // so callers receive useful feedback instead of a silent no-op update.
+
+        // TODO: validate that title, when provided, is a non-empty string after
+        // trimming, consistent with the create_todo validation.
+
         const updateData: Record<string, unknown> = {};
         if (title !== undefined) updateData.title = title.trim();
         if (completed !== undefined) updateData.completed = completed;
@@ -218,6 +226,8 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           return mcpError(req.id, -32602, "id is required and must be a string");
         }
 
+        // TODO: check the number of rows affected and return a "not found" error
+        // when no row matched the given id, instead of silently returning success.
         const { error } = await supabase
           .from("todos")
           .delete()

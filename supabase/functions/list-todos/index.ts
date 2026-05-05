@@ -27,6 +27,10 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  // TODO: add caller authentication (e.g. verify the Supabase anon key in the
+  // Authorization header) so unauthenticated requests are rejected before the
+  // database query is executed.
+
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
@@ -48,6 +52,9 @@ Deno.serve(async (req: Request) => {
     .from("todos")
     .select("id, title, completed, created_at")
     .order("id", { ascending: true });
+
+  // TODO: add limit/offset (or cursor-based) pagination so the response
+  // stays bounded when the todos table grows large.
 
   if (error) {
     return jsonResponse(

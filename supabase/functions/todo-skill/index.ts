@@ -85,6 +85,12 @@ Create a new todo item.
 | 415    | Content-Type is not application/json           |
 | 500    | Server or database error                       |
 
+<!-- TODO: document the update and delete todo operations exposed by the
+     todo-mcp-server function (update_todo, delete_todo tools). -->
+
+<!-- TODO: document the todo-mcp-server MCP endpoint so clients know how to
+     connect and call its JSON-RPC tools. -->
+
 ## Usage Examples
 
 \`\`\`bash

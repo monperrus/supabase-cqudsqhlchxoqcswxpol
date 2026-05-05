@@ -50,3 +50,6 @@ supabase functions secrets set --project-ref <project-ref> \
 ## License
 
 MIT
+
+<!-- TODO: add automated tests (e.g. Deno test files per function) and a CI
+     workflow that runs them on every pull request to prevent regressions. -->

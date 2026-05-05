@@ -27,6 +27,9 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  // TODO: add caller authentication (e.g. verify the Supabase anon key in the
+  // Authorization header) so unauthenticated requests are rejected early.
+
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     return jsonResponse(
