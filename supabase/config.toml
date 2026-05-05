@@ -5,10 +5,10 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.list-todos]
-verify_jwt = true
+verify_jwt = false
 
 [functions.create-todo]
-verify_jwt = true
+verify_jwt = false
 
 [functions.update-todo]
-verify_jwt = true
+verify_jwt = false
