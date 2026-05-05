@@ -1,412 +1,409 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-// NOTE: This MCP server requires GitHub OAuth authentication.
-// All todos are filtered by the authenticated user via RLS policies.
-// The MCP client must provide a valid JWT token in the Authorization header.
+const FUNCTION_PATH = "/functions/v1/todo-mcp-server";
 
-interface MCPRequest {
-  jsonrpc: string;
-  id: string | number;
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-interface MCPResponse {
-  jsonrpc: string;
-  id: string | number;
-  result?: unknown;
-  error?: {
-    code: number;
-    message: string;
-    data?: unknown;
-  };
-}
-
-const jsonHeaders = {
-  "Content-Type": "application/json",
+const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-function jsonResponse(body: unknown, status: number) {
+function jsonResp(body: unknown, status = 200, extra?: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: jsonHeaders,
+    headers: { "Content-Type": "application/json", ...cors, ...extra },
   });
 }
 
-function mcpError(id: string | number, code: number, message: string): MCPResponse {
-  return {
-    jsonrpc: "2.0",
-    id,
-    error: { code, message },
-  };
+function redirect(url: string) {
+  return new Response(null, { status: 302, headers: { Location: url, ...cors } });
 }
 
-function mcpResult(id: string | number, result: unknown): MCPResponse {
-  return {
-    jsonrpc: "2.0",
-    id,
-    result,
-  };
+async function sha256b64url(input: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  let s = "";
+  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
-async function initializeServer(req: MCPRequest): Promise<MCPResponse> {
-  return mcpResult(req.id, {
-    protocolVersion: "2024-11-05",
-    capabilities: {
-      tools: {
-        listChanged: false,
+function randomB64url(bytes = 32): string {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  let s = "";
+  for (const b of arr) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function serviceClient() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { auth: { autoRefreshToken: false, persistSession: false } },
+  );
+}
+
+// ---- OAuth discovery ----
+
+function handleResourceMetadata(req: Request) {
+  const base = baseUrl(req);
+  return jsonResp({ resource: base, authorization_servers: [base] });
+}
+
+function handleAuthServerMetadata(req: Request) {
+  const base = baseUrl(req);
+  return jsonResp({
+    issuer: base,
+    authorization_endpoint: `${base}/authorize`,
+    token_endpoint: `${base}/token`,
+    registration_endpoint: `${base}/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  });
+}
+
+// Dynamic client registration — accept any public client
+async function handleRegister(req: Request) {
+  let meta: Record<string, unknown> = {};
+  try { meta = await req.json(); } catch { /* no body */ }
+  return jsonResp({
+    client_id: randomB64url(16),
+    client_secret_expires_at: 0,
+    redirect_uris: meta.redirect_uris ?? [],
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  });
+}
+
+// Step 1: MCP client → our /authorize → redirect to GitHub via Supabase PKCE
+async function handleAuthorize(req: Request): Promise<Response> {
+  const p = new URL(req.url).searchParams;
+  const codeChallenge = p.get("code_challenge");
+  const codeChallengeMethod = p.get("code_challenge_method") ?? "S256";
+  const redirectUri = p.get("redirect_uri");
+  const state = p.get("state");
+  const clientId = p.get("client_id");
+
+  if (!codeChallenge || !redirectUri || p.get("response_type") !== "code") {
+    return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
+  }
+
+  const supabaseCodeVerifier = randomB64url(32);
+  const supabaseCodeChallenge = await sha256b64url(supabaseCodeVerifier);
+
+  const db = serviceClient();
+  const { data, error } = await db.from("mcp_auth_codes").insert({
+    mcp_code_challenge: codeChallenge,
+    mcp_code_challenge_method: codeChallengeMethod,
+    mcp_redirect_uri: redirectUri,
+    mcp_client_id: clientId,
+    mcp_state: state,
+    supabase_code_verifier: supabaseCodeVerifier,
+  }).select("id").single();
+
+  if (error || !data) {
+    return jsonResp({ error: "server_error", error_description: "DB insert failed" }, 500);
+  }
+
+  const callbackUrl = `${baseUrl(req)}/callback?session_id=${data.id}`;
+  const authUrl = new URL(`${Deno.env.get("SUPABASE_URL")}/auth/v1/authorize`);
+  authUrl.searchParams.set("provider", "github");
+  authUrl.searchParams.set("redirect_to", callbackUrl);
+  authUrl.searchParams.set("code_challenge", supabaseCodeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  return redirect(authUrl.toString());
+}
+
+// Step 2: Supabase redirects here after GitHub OAuth; exchange code → token; redirect to MCP client
+async function handleCallback(req: Request): Promise<Response> {
+  const p = new URL(req.url).searchParams;
+  const sessionId = p.get("session_id");
+  const code = p.get("code"); // Supabase PKCE auth code
+
+  if (!sessionId || !code) {
+    return jsonResp({ error: "invalid_request", error_description: "Missing session_id or code" }, 400);
+  }
+
+  const db = serviceClient();
+  const { data: session, error: lookupErr } = await db.from("mcp_auth_codes")
+    .select("*")
+    .eq("id", sessionId)
+    .is("used_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .single();
+
+  if (lookupErr || !session) {
+    return jsonResp({ error: "invalid_request", error_description: "Invalid or expired session" }, 400);
+  }
+
+  // Exchange Supabase auth code for access_token using PKCE
+  const tokenRes = await fetch(
+    `${Deno.env.get("SUPABASE_URL")}/auth/v1/token?grant_type=pkce`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": Deno.env.get("SUPABASE_ANON_KEY")!,
       },
+      body: JSON.stringify({
+        auth_code: code,
+        code_verifier: session.supabase_code_verifier,
+      }),
     },
-    serverInfo: {
-      name: "todo-mcp-server",
-      version: "1.0.0",
-    },
-  });
+  );
+
+  if (!tokenRes.ok) {
+    const err = await tokenRes.text();
+    return jsonResp({ error: "server_error", error_description: `Supabase token exchange failed: ${err}` }, 500);
+  }
+
+  const { access_token } = await tokenRes.json();
+  if (!access_token) {
+    return jsonResp({ error: "server_error", error_description: "No access_token in Supabase response" }, 500);
+  }
+
+  await db.from("mcp_auth_codes").update({ supabase_access_token: access_token }).eq("id", sessionId);
+
+  // Redirect MCP client back with our auth code (= sessionId)
+  const dest = new URL(session.mcp_redirect_uri);
+  dest.searchParams.set("code", sessionId);
+  if (session.mcp_state) dest.searchParams.set("state", session.mcp_state);
+
+  return redirect(dest.toString());
 }
 
-async function listTools(req: MCPRequest): Promise<MCPResponse> {
-  return mcpResult(req.id, {
-    tools: [
-      {
-        name: "list_todos",
-        description: "List all todos from the database",
-        inputSchema: {
-          type: "object",
-          properties: {},
-          required: [],
-        },
-      },
-      {
-        name: "create_todo",
-        description: "Create a new todo",
-        inputSchema: {
-          type: "object",
-          properties: {
-            title: {
-              type: "string",
-              description: "The title of the todo",
-            },
-            completed: {
-              type: "boolean",
-              description: "Whether the todo is completed (default: false)",
-            },
-          },
-          required: ["title"],
-        },
-      },
-      {
-        name: "update_todo",
-        description: "Update a todo",
-        inputSchema: {
-          type: "object",
-          properties: {
-            id: {
-              type: "string",
-              description: "The ID of the todo to update",
-            },
-            title: {
-              type: "string",
-              description: "The new title (optional)",
-            },
-            completed: {
-              type: "boolean",
-              description: "The new completed status (optional)",
-            },
-          },
-          required: ["id"],
-        },
-      },
-      {
-        name: "delete_todo",
-        description: "Delete a todo",
-        inputSchema: {
-          type: "object",
-          properties: {
-            id: {
-              type: "string",
-              description: "The ID of the todo to delete",
-            },
-          },
-          required: ["id"],
-        },
-      },
-    ],
-  });
+// Step 3: MCP client exchanges our auth code for the Supabase access_token
+async function handleToken(req: Request): Promise<Response> {
+  const text = await req.text();
+  const body = new URLSearchParams(text);
+
+  const grantType = body.get("grant_type");
+  const code = body.get("code");
+  const codeVerifier = body.get("code_verifier");
+
+  if (grantType !== "authorization_code" || !code || !codeVerifier) {
+    return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
+  }
+
+  const db = serviceClient();
+  const { data: session, error } = await db.from("mcp_auth_codes")
+    .select("*")
+    .eq("id", code)
+    .is("used_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .not("supabase_access_token", "is", null)
+    .single();
+
+  if (error || !session) {
+    return jsonResp({ error: "invalid_grant", error_description: "Invalid or expired code" }, 400);
+  }
+
+  // Verify PKCE
+  const computed = await sha256b64url(codeVerifier);
+  if (computed !== session.mcp_code_challenge) {
+    return jsonResp({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
+  }
+
+  await db.from("mcp_auth_codes").update({ used_at: new Date().toISOString() }).eq("id", code);
+
+  return jsonResp({ access_token: session.supabase_access_token, token_type: "bearer" });
 }
 
-async function callTool(req: MCPRequest, userId: string): Promise<MCPResponse> {
-  const { name, arguments: args } = req.params as {
-    name: string;
-    arguments: Record<string, unknown>;
-  };
+// ---- MCP JSON-RPC ----
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+interface MCPReq { jsonrpc: string; id?: string | number; method: string; params?: Record<string, unknown> }
+interface MCPResp { jsonrpc: string; id: string | number; result?: unknown; error?: { code: number; message: string } }
 
-  if (!supabaseUrl || !serviceRoleKey) {
-    return mcpError(req.id, -32603, "Supabase configuration missing");
-  }
-
-  const supabase = createClient(supabaseUrl, serviceRoleKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-
-  try {
-    switch (name) {
-      case "list_todos": {
-        const { data, error } = await supabase
-          .from("todos")
-          .select("id, title, completed, created_at")
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false });
-
-        if (error) throw new Error(error.message);
-        
-        if (!data || data.length === 0) {
-          return mcpResult(req.id, {
-            success: true,
-            data: [],
-            text: "No todos found."
-          });
-        }
-        
-        const formatted = data.map((t: any, i: number) => {
-          const status = t.completed ? "✅" : "⏳";
-          return `${i + 1}. ${status} ${t.title}`;
-        }).join("\n");
-        
-        return mcpResult(req.id, {
-          success: true,
-          data: data,
-          text: formatted
-        });
-      }
-
-      case "create_todo": {
-        const title = args.title as string;
-        const completed = args.completed as boolean | undefined;
-
-        if (!title || typeof title !== "string" || title.trim().length === 0) {
-          return mcpError(req.id, -32602, "title is required and must be a non-empty string");
-        }
-
-        const { data, error } = await supabase
-          .from("todos")
-          .insert({
-            title: title.trim(),
-            completed: completed ?? false,
-            user_id: userId,
-          })
-          .select("id, title, completed, created_at")
-          .single();
-
-        if (error) throw new Error(error.message);
-        return mcpResult(req.id, {
-          success: true,
-          data: data,
-          text: `Created todo: "${data.title}" (ID: ${data.id})`
-        });
-      }
-
-      case "update_todo": {
-        const id = args.id as string;
-        const title = args.title as string | undefined;
-        const completed = args.completed as boolean | undefined;
-
-        if (!id || typeof id !== "string") {
-          return mcpError(req.id, -32602, "id is required and must be a string");
-        }
-
-        const updateData: Record<string, unknown> = {};
-        if (title !== undefined) updateData.title = title.trim();
-        if (completed !== undefined) updateData.completed = completed;
-
-        const { data, error } = await supabase
-          .from("todos")
-          .update(updateData)
-          .eq("id", id)
-          .eq("user_id", userId)
-          .select("id, title, completed, created_at")
-          .single();
-
-        if (error) throw new Error(error.message);
-        const status = data.completed ? "✅" : "⏳";
-        return mcpResult(req.id, {
-          success: true,
-          data: data,
-          text: `Updated todo: ${status} ${data.title}`
-        });
-      }
-
-      case "delete_todo": {
-        const id = args.id as string;
-
-        if (!id || typeof id !== "string") {
-          return mcpError(req.id, -32602, "id is required and must be a string");
-        }
-
-        const { error } = await supabase
-          .from("todos")
-          .delete()
-          .eq("id", id)
-          .eq("user_id", userId);
-
-        if (error) throw new Error(error.message);
-        return mcpResult(req.id, {
-          success: true,
-          data: { id: id },
-          text: `Deleted todo with ID: ${id}`
-        });
-      }
-
-      default:
-        return mcpError(req.id, -32601, `Unknown method: ${name}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return mcpError(req.id, -32603, `Internal error: ${message}`);
-  }
+function mcpOk(id: string | number, result: unknown): MCPResp {
+  return { jsonrpc: "2.0", id, result };
+}
+function mcpErr(id: string | number, code: number, message: string): MCPResp {
+  return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: jsonHeaders });
+async function handleMCP(req: Request): Promise<Response> {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+
+  if (req.method !== "POST") return jsonResp({ error: "Use POST" }, 405);
+  if (!(req.headers.get("content-type") ?? "").includes("application/json")) {
+    return jsonResp({ error: "Content-Type must be application/json" }, 415);
   }
 
-  if (req.method !== "POST") {
-    return jsonResponse(
-      { error: "Method not allowed. Use POST." },
-      405,
-    );
-  }
+  let mcp: MCPReq;
+  try { mcp = await req.json(); } catch { return jsonResp({ error: "Invalid JSON" }, 400); }
 
-  const contentType = req.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    return jsonResponse(
-      { error: "Content-Type must be application/json." },
-      415,
-    );
-  }
+  if (mcp.jsonrpc !== "2.0" || !mcp.method) return jsonResp({ error: "Invalid JSON-RPC" }, 400);
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return jsonResponse(
-        { error: "Request body must be valid JSON." },
-        400,
-      );
-    }
-    throw error;
-  }
+  const reqId = mcp.id ?? Date.now();
 
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return jsonResponse(
-      { error: "Request body must be a JSON object." },
-      400,
-    );
-  }
-
-  const mcp = body as MCPRequest;
-
-  if (!mcp.jsonrpc || mcp.jsonrpc !== "2.0") {
-    return jsonResponse(
-      { error: "Invalid JSON-RPC request: missing or invalid jsonrpc field" },
-      400,
-    );
-  }
-
-  if (!mcp.method || typeof mcp.method !== "string") {
-    return jsonResponse(
-      { error: "Invalid JSON-RPC request: missing or invalid method" },
-      400,
-    );
-  }
-
-  // For requests without id (notifications), use a default id if needed for internal processing
-  const requestId = mcp.id ?? Date.now();
-
-  // Extract user ID from JWT token (required for all requests)
+  // Verify auth for all requests
   const authHeader = req.headers.get("authorization");
   let userId: string | null = null;
-  
-  if (!authHeader) {
-    // Allow initialize and tools/list without auth, but require auth for tools/call
-    if (mcp.method === "tools/call") {
-      const response = mcpError(requestId, -32600, "Authorization required. Please sign in with GitHub.");
-      if (mcp.id === undefined || mcp.id === null) {
-        return new Response(null, { status: 204 });
-      }
-      return jsonResponse(response, 401);
-    }
-  } else {
-    try {
-      const token = authHeader.replace("Bearer ", "");
-      const parts = token.split(".");
-      if (parts.length !== 3) {
-        throw new Error("Invalid JWT format (expected 3 parts)");
-      }
-      
-      // Decode URL-safe base64 (JWT format)
-      const payloadBase64 = parts[1]
-        .replace(/-/g, '+')
-        .replace(/_/g, '/');
-      const padding = '='.repeat((4 - (payloadBase64.length % 4)) % 4);
-      const payload = JSON.parse(atob(payloadBase64 + padding));
-      userId = payload.sub;
-      
-      if (!userId) {
-        throw new Error("No user ID (sub) in token");
-      }
-    } catch (error) {
-      const errorMsg = error && typeof error === 'object' && 'message' in error 
-        ? (error as Error).message 
-        : String(error);
-      const response = mcpError(requestId, -32600, `Invalid token: ${errorMsg}`);
-      if (mcp.id === undefined || mcp.id === null) {
-        return new Response(null, { status: 204 });
-      }
-      return jsonResponse(response, 401);
-    }
+
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { auth: { autoRefreshToken: false, persistSession: false } },
+    );
+    const { data, error } = await supabase.auth.getUser(token);
+    if (!error && data.user) userId = data.user.id;
   }
 
-  let response: MCPResponse;
+  if (!userId) {
+    const resourceMeta = `${baseUrl(req)}/.well-known/oauth-protected-resource`;
+    const wwwAuth = `Bearer resource_metadata="${resourceMeta}"`;
+    if (mcp.id == null) return new Response(null, { status: 204 });
+    return jsonResp(mcpErr(reqId, -32600, "Authorization required"), 401, {
+      "WWW-Authenticate": wwwAuth,
+    });
+  }
+
+  let resp: MCPResp;
   try {
     switch (mcp.method) {
       case "initialize":
-        response = await initializeServer(mcp);
+        resp = mcpOk(reqId, {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: "todo-mcp-server", version: "1.0.0" },
+        });
         break;
       case "tools/list":
-        response = await listTools(mcp);
+        resp = mcpOk(reqId, { tools: TOOLS });
         break;
       case "tools/call":
-        if (!userId) {
-          response = mcpError(requestId, -32600, "Authorization required for tools/call");
-        } else {
-          response = await callTool(mcp, userId);
-        }
+        resp = await callTool(mcp, userId, reqId);
         break;
       default:
-        response = mcpError(requestId, -32601, `Unknown method: ${mcp.method}`);
+        resp = mcpErr(reqId, -32601, `Unknown method: ${mcp.method}`);
     }
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    response = mcpError(requestId, -32603, `Internal error: ${message}`);
+  } catch (e) {
+    resp = mcpErr(reqId, -32603, `Internal error: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // Only return response if the original request had an id
-  if (mcp.id === undefined || mcp.id === null) {
-    return new Response(null, { status: 204 });
-  }
+  if (mcp.id == null) return new Response(null, { status: 204 });
+  return jsonResp(resp);
+}
 
-  return jsonResponse(response, 200);
+async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Promise<MCPResp> {
+  const { name, arguments: args = {} } = mcp.params as { name: string; arguments?: Record<string, unknown> };
+  const db = serviceClient();
+
+  switch (name) {
+    case "list_todos": {
+      const { data, error } = await db.from("todos")
+        .select("id, title, completed, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+      if (error) throw new Error(error.message);
+      if (!data?.length) return mcpOk(reqId, { content: [{ type: "text", text: "No todos found." }] });
+      const text = data.map((t: any, i: number) => `${i + 1}. ${t.completed ? "✅" : "⏳"} ${t.title}`).join("\n");
+      return mcpOk(reqId, { content: [{ type: "text", text }] });
+    }
+
+    case "create_todo": {
+      const title = (args.title as string)?.trim();
+      if (!title) return mcpErr(reqId, -32602, "title is required");
+      const { data, error } = await db.from("todos")
+        .insert({ title, completed: args.completed ?? false, user_id: userId })
+        .select("id, title, completed, created_at").single();
+      if (error) throw new Error(error.message);
+      return mcpOk(reqId, { content: [{ type: "text", text: `Created: "${data.title}" (ID: ${data.id})` }] });
+    }
+
+    case "update_todo": {
+      const id = args.id as string;
+      if (!id) return mcpErr(reqId, -32602, "id is required");
+      const update: Record<string, unknown> = {};
+      if (args.title !== undefined) update.title = (args.title as string).trim();
+      if (args.completed !== undefined) update.completed = args.completed;
+      const { data, error } = await db.from("todos")
+        .update(update).eq("id", id).eq("user_id", userId)
+        .select("id, title, completed").single();
+      if (error) throw new Error(error.message);
+      return mcpOk(reqId, { content: [{ type: "text", text: `Updated: ${data.completed ? "✅" : "⏳"} ${data.title}` }] });
+    }
+
+    case "delete_todo": {
+      const id = args.id as string;
+      if (!id) return mcpErr(reqId, -32602, "id is required");
+      const { error } = await db.from("todos").delete().eq("id", id).eq("user_id", userId);
+      if (error) throw new Error(error.message);
+      return mcpOk(reqId, { content: [{ type: "text", text: `Deleted todo ID: ${id}` }] });
+    }
+
+    default:
+      return mcpErr(reqId, -32601, `Unknown tool: ${name}`);
+  }
+}
+
+const TOOLS = [
+  {
+    name: "list_todos",
+    description: "List all todos from the database",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "create_todo",
+    description: "Create a new todo",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "The title of the todo" },
+        completed: { type: "boolean", description: "Whether completed (default: false)" },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "update_todo",
+    description: "Update a todo",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The ID of the todo to update" },
+        title: { type: "string", description: "New title (optional)" },
+        completed: { type: "boolean", description: "New completed status (optional)" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "delete_todo",
+    description: "Delete a todo",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "The ID of the todo to delete" } },
+      required: ["id"],
+    },
+  },
+];
+
+// ---- Router ----
+
+function baseUrl(req: Request): string {
+  const u = new URL(req.url);
+  return `${u.protocol}//${u.host}${FUNCTION_PATH}`;
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+
+  const u = new URL(req.url);
+  const sub = u.pathname.slice(FUNCTION_PATH.length) || "/";
+
+  if (sub === "/.well-known/oauth-protected-resource" && req.method === "GET") return handleResourceMetadata(req);
+  if (sub === "/.well-known/oauth-authorization-server" && req.method === "GET") return handleAuthServerMetadata(req);
+  if (sub === "/register" && req.method === "POST") return handleRegister(req);
+  if (sub === "/authorize" && req.method === "GET") return handleAuthorize(req);
+  if (sub === "/callback" && req.method === "GET") return handleCallback(req);
+  if (sub === "/token" && req.method === "POST") return handleToken(req);
+
+  return handleMCP(req);
 });
