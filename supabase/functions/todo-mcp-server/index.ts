@@ -1,7 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const FUNCTION_PATH = "/functions/v1/todo-mcp-server";
+// Supabase strips /functions/v1 from req.url internally; externally the path is /functions/v1/todo-mcp-server
+const FUNCTION_PATH = "/todo-mcp-server";
+const PUBLIC_FUNCTION_PATH = "/functions/v1/todo-mcp-server";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -389,7 +391,8 @@ const TOOLS = [
 
 function baseUrl(req: Request): string {
   const u = new URL(req.url);
-  return `${u.protocol}//${u.host}${FUNCTION_PATH}`;
+  // Always return public https URL with full path
+  return `https://${u.host}${PUBLIC_FUNCTION_PATH}`;
 }
 
 Deno.serve(async (req: Request) => {
@@ -398,10 +401,6 @@ Deno.serve(async (req: Request) => {
   const u = new URL(req.url);
   const sub = u.pathname.slice(FUNCTION_PATH.length) || "/";
 
-  // Temporary debug endpoint — remove after diagnosis
-  if (u.pathname.endsWith("/debug")) {
-    return jsonResp({ url: req.url, pathname: u.pathname, sub, method: req.method, fpLen: FUNCTION_PATH.length });
-  }
 
   if (sub === "/.well-known/oauth-protected-resource" && req.method === "GET") return handleResourceMetadata(req);
   if (sub === "/.well-known/oauth-authorization-server" && req.method === "GET") return handleAuthServerMetadata(req);
