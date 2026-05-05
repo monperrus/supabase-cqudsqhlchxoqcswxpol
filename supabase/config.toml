@@ -9,3 +9,6 @@ verify_jwt = true
 
 [functions.create-todo]
 verify_jwt = true
+
+[functions.update-todo]
+verify_jwt = true
