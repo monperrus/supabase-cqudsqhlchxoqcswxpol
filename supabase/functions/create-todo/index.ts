@@ -66,6 +66,13 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  if (normalizedTitle.length > 500) {
+    return jsonResponse(
+      { error: 'Field "title" must not exceed 500 characters.' },
+      400,
+    );
+  }
+
   if (completed !== undefined && typeof completed !== "boolean") {
     return jsonResponse(
       { error: 'Field "completed" must be a boolean when provided.' },
