@@ -59,13 +59,13 @@ const session = await joinSession({
         },
         {
             name: "update-todo",
-            description: "Update a todo",
+            description: "Update a todo by ID or search by title",
             parameters: {
                 type: "object",
                 properties: {
                     id: {
                         type: "string",
-                        description: "The ID of the todo to update",
+                        description: "The ID of the todo to update, or a title substring to search for",
                     },
                     title: {
                         type: "string",
@@ -81,7 +81,25 @@ const session = await joinSession({
             skipPermission: true,
             handler: async (args) => {
                 try {
-                    const params = { id: args.id };
+                    let todoId = String(args.id);
+                    
+                    // If id is not numeric, search for todo by title
+                    if (!/^\d+$/.test(todoId)) {
+                        const listResult = await callMCP("list_todos");
+                        const todos = listResult?.data || [];
+                        const matching = todos.filter(t => 
+                            t.title.toLowerCase().includes(todoId.toLowerCase())
+                        );
+                        if (matching.length === 1) {
+                            todoId = String(matching[0].id);
+                        } else if (matching.length > 1) {
+                            return `Found ${matching.length} todos matching "${todoId}". Please be more specific.`;
+                        } else {
+                            return `No todos found matching "${todoId}".`;
+                        }
+                    }
+                    
+                    const params = { id: todoId };
                     if (args.title !== undefined) params.title = args.title;
                     if (args.completed !== undefined) params.completed = args.completed;
                     const result = await callMCP("update_todo", params);
