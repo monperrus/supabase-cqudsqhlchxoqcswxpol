@@ -208,13 +208,15 @@ async function handleCallback(req: Request): Promise<Response> {
   const supabaseCodeVerifier = await hmacB64url(codeChallenge, secret);
 
   // Exchange Supabase auth code for access_token
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
   const tokenRes = await fetch(
     `${Deno.env.get("SUPABASE_URL")}/auth/v1/token?grant_type=pkce`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "apikey": Deno.env.get("SUPABASE_ANON_KEY")!,
+        "apikey": anonKey,
+        "Authorization": `Bearer ${anonKey}`,
       },
       body: JSON.stringify({ auth_code: supabaseCode, code_verifier: supabaseCodeVerifier }),
     },
