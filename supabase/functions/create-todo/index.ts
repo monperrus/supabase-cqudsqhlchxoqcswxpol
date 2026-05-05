@@ -17,7 +17,7 @@ function jsonResponse(body: unknown, status: number) {
   });
 }
 
-Deno.serve(async (req: Request) => {
+export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: jsonHeaders });
   }
@@ -116,4 +116,8 @@ Deno.serve(async (req: Request) => {
   }
 
   return jsonResponse({ todo: data }, 201);
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handler);
+}

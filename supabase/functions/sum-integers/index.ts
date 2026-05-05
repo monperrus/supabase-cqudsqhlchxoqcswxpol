@@ -9,7 +9,7 @@ const jsonHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-function parseInteger(value: unknown): number | null {
+export function parseInteger(value: unknown): number | null {
   if (typeof value === "number" && Number.isInteger(value)) {
     return value;
   }
@@ -21,7 +21,7 @@ function parseInteger(value: unknown): number | null {
   return null;
 }
 
-Deno.serve(async (req: Request) => {
+export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: jsonHeaders });
   }
@@ -61,4 +61,8 @@ Deno.serve(async (req: Request) => {
     JSON.stringify({ A: a, b, sum: a + 2*b }),
     { status: 200, headers: jsonHeaders },
   );
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handler);
+}

@@ -17,7 +17,7 @@ function jsonResponse(body: unknown, status: number) {
   });
 }
 
-Deno.serve(async (req: Request) => {
+export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: jsonHeaders });
   }
@@ -26,16 +26,6 @@ Deno.serve(async (req: Request) => {
     return jsonResponse(
       { error: "Method not allowed. Use GET." },
       405,
-    );
-  }
-
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse(
-      { error: "Supabase function secrets are not configured." },
-      500,
     );
   }
 
@@ -60,6 +50,16 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return jsonResponse(
+      { error: "Supabase function secrets are not configured." },
+      500,
+    );
+  }
+
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: {
       autoRefreshToken: false,
@@ -81,4 +81,8 @@ Deno.serve(async (req: Request) => {
   }
 
   return jsonResponse({ todos: data, limit, offset }, 200);
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handler);
+}
