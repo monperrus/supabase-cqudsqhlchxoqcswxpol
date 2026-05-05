@@ -1,2 +1,5 @@
 [functions.todo-skill]
 verify_jwt = false
+
+[functions.todo-mcp-server]
+verify_jwt = false
