@@ -37,6 +37,27 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  const url = new URL(req.url);
+  const limitParam = url.searchParams.get("limit");
+  const offsetParam = url.searchParams.get("offset");
+
+  const limit = limitParam !== null ? parseInt(limitParam, 10) : 100;
+  const offset = offsetParam !== null ? parseInt(offsetParam, 10) : 0;
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    return jsonResponse(
+      { error: 'Query parameter "limit" must be an integer between 1 and 1000.' },
+      400,
+    );
+  }
+
+  if (!Number.isInteger(offset) || offset < 0) {
+    return jsonResponse(
+      { error: 'Query parameter "offset" must be a non-negative integer.' },
+      400,
+    );
+  }
+
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: {
       autoRefreshToken: false,
@@ -47,7 +68,8 @@ Deno.serve(async (req: Request) => {
   const { data, error } = await supabase
     .from("todos")
     .select("id, title, completed, created_at")
-    .order("id", { ascending: true });
+    .order("id", { ascending: true })
+    .range(offset, offset + limit - 1);
 
   if (error) {
     return jsonResponse(
@@ -56,5 +78,5 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  return jsonResponse({ todos: data }, 200);
+  return jsonResponse({ todos: data, limit, offset }, 200);
 });
