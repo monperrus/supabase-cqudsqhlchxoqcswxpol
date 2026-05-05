@@ -1,13 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-// NOTE: This MCP server is an admin/operator tool that returns ALL todos
-// without user filtering, regardless of authentication. It should only be
-// accessed from trusted clients (e.g., CLI, internal tools). The web frontend
-// uses separate Edge Functions (list-todos, create-todo) that require authentication
-// and enforce RLS policies for user-scoped access.
-//
-// Network access to this function should be restricted to trusted sources.
+// NOTE: This MCP server requires GitHub OAuth authentication.
+// All todos are filtered by the authenticated user via RLS policies.
+// The MCP client must provide a valid JWT token in the Authorization header.
 
 interface MCPRequest {
   jsonrpc: string;
@@ -142,7 +138,7 @@ async function listTools(req: MCPRequest): Promise<MCPResponse> {
   });
 }
 
-async function callTool(req: MCPRequest): Promise<MCPResponse> {
+async function callTool(req: MCPRequest, userId: string): Promise<MCPResponse> {
   const { name, arguments: args } = req.params as {
     name: string;
     arguments: Record<string, unknown>;
@@ -168,6 +164,7 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
         const { data, error } = await supabase
           .from("todos")
           .select("id, title, completed, created_at")
+          .eq("user_id", userId)
           .order("created_at", { ascending: false });
 
         if (error) throw new Error(error.message);
@@ -205,6 +202,7 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           .insert({
             title: title.trim(),
             completed: completed ?? false,
+            user_id: userId,
           })
           .select("id, title, completed, created_at")
           .single();
@@ -234,6 +232,7 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
           .from("todos")
           .update(updateData)
           .eq("id", id)
+          .eq("user_id", userId)
           .select("id, title, completed, created_at")
           .single();
 
@@ -256,7 +255,8 @@ async function callTool(req: MCPRequest): Promise<MCPResponse> {
         const { error } = await supabase
           .from("todos")
           .delete()
-          .eq("id", id);
+          .eq("id", id)
+          .eq("user_id", userId);
 
         if (error) throw new Error(error.message);
         return mcpResult(req.id, {
@@ -334,6 +334,50 @@ Deno.serve(async (req: Request) => {
   // For requests without id (notifications), use a default id if needed for internal processing
   const requestId = mcp.id ?? Date.now();
 
+  // Extract user ID from JWT token (required for all requests)
+  const authHeader = req.headers.get("authorization");
+  let userId: string | null = null;
+  
+  if (!authHeader) {
+    // Allow initialize and tools/list without auth, but require auth for tools/call
+    if (mcp.method === "tools/call") {
+      const response = mcpError(requestId, -32600, "Authorization required. Please sign in with GitHub.");
+      if (mcp.id === undefined || mcp.id === null) {
+        return new Response(null, { status: 204 });
+      }
+      return jsonResponse(response, 401);
+    }
+  } else {
+    try {
+      const token = authHeader.replace("Bearer ", "");
+      const parts = token.split(".");
+      if (parts.length !== 3) {
+        throw new Error("Invalid JWT format (expected 3 parts)");
+      }
+      
+      // Decode URL-safe base64 (JWT format)
+      const payloadBase64 = parts[1]
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+      const padding = '='.repeat((4 - (payloadBase64.length % 4)) % 4);
+      const payload = JSON.parse(atob(payloadBase64 + padding));
+      userId = payload.sub;
+      
+      if (!userId) {
+        throw new Error("No user ID (sub) in token");
+      }
+    } catch (error) {
+      const errorMsg = error && typeof error === 'object' && 'message' in error 
+        ? (error as Error).message 
+        : String(error);
+      const response = mcpError(requestId, -32600, `Invalid token: ${errorMsg}`);
+      if (mcp.id === undefined || mcp.id === null) {
+        return new Response(null, { status: 204 });
+      }
+      return jsonResponse(response, 401);
+    }
+  }
+
   let response: MCPResponse;
   try {
     switch (mcp.method) {
@@ -344,10 +388,15 @@ Deno.serve(async (req: Request) => {
         response = await listTools(mcp);
         break;
       case "tools/call":
-        response = await callTool(mcp);
+        if (!userId) {
+          response = mcpError(requestId, -32600, "Authorization required for tools/call");
+        } else {
+          response = await callTool(mcp, userId);
+        }
         break;
       default:
         response = mcpError(requestId, -32601, `Unknown method: ${mcp.method}`);
+    }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
