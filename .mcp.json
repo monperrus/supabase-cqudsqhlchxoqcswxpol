@@ -6,7 +6,10 @@
     },
     "todo-mcp-server": {
       "type": "http",
-      "url": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server"
+      "url": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server",
+      "auth": {
+        "type": "none"
+      }
     }
   }
 }
