@@ -1,6 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+// NOTE: This MCP server is an admin/operator tool that returns ALL todos
+// without user filtering, regardless of authentication. It should only be
+// accessed from trusted clients (e.g., CLI, internal tools). The web frontend
+// uses separate Edge Functions (list-todos, create-todo) that require authentication
+// and enforce RLS policies for user-scoped access.
+//
+// Network access to this function should be restricted to trusted sources.
+
 interface MCPRequest {
   jsonrpc: string;
   id: string | number;

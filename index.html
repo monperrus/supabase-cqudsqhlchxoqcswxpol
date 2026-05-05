@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Supabase Todo Functions Demo</title>
+    <title>Supabase Todo App</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -19,6 +19,17 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         h1 { color: #333; margin-top: 0; }
+        .auth-section {
+            background: #f0f7ff;
+            border: 1px solid #cce5ff;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .user-info {
+            color: #666;
+            margin: 10px 0;
+        }
         .section {
             margin: 20px 0;
             padding: 15px;
@@ -45,6 +56,11 @@
             margin-left: 8px;
         }
         button:hover { background: #0052a3; }
+        button.logout {
+            background: #dc3545;
+            margin-left: 0;
+        }
+        button.logout:hover { background: #c82333; }
         .output {
             background: white;
             border: 1px solid #ddd;
@@ -60,28 +76,136 @@
         .success { color: #28a745; }
         .error { color: #dc3545; }
         .loading { color: #999; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📝 Supabase Todo Functions</h1>
+        <h1>📝 Supabase Todo App</h1>
         
-        <div class="section">
-            <h2>List Todos</h2>
-            <button onclick="listTodos()">Fetch All Todos</button>
-            <div id="list-output" class="output"></div>
+        <div class="auth-section" id="auth-section">
+            <h2>Authentication</h2>
+            <div id="auth-content">
+                <button onclick="signInWithGithub()">🔑 Sign In with GitHub</button>
+                <div id="auth-error" class="output error hidden"></div>
+            </div>
+            <div id="user-content" class="hidden">
+                <div class="user-info">
+                    <strong>Logged in as:</strong> <span id="user-email"></span>
+                </div>
+                <button class="logout" onclick="logout()">Sign Out</button>
+            </div>
         </div>
 
-        <div class="section">
-            <h2>Create Todo</h2>
-            <input type="text" id="todo-title" placeholder="Enter todo title...">
-            <button onclick="createTodo()">Create</button>
-            <div id="create-output" class="output"></div>
+        <div id="app-section" class="hidden">
+            <div class="section">
+                <h2>List Todos</h2>
+                <button onclick="listTodos()">Fetch All My Todos</button>
+                <div id="list-output" class="output"></div>
+            </div>
+
+            <div class="section">
+                <h2>Create Todo</h2>
+                <input type="text" id="todo-title" placeholder="Enter todo title...">
+                <button onclick="createTodo()">Create</button>
+                <div id="create-output" class="output"></div>
+            </div>
         </div>
     </div>
 
     <script>
-        const BASE_URL = 'https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1';
+        const BASE_URL = 'https://cqudsqhlchxoqcswxpol.supabase.co';
+        const FUNCTIONS_URL = `${BASE_URL}/functions/v1`;
+        let session = null;
+
+        // Initialize on page load
+        async function init() {
+            // Check if there's a session in the URL (OAuth callback)
+            const fragment = new URLSearchParams(window.location.hash.slice(1));
+            const accessToken = fragment.get('access_token');
+
+            if (accessToken) {
+                // OAuth callback - store the token and clean URL
+                localStorage.setItem('access_token', accessToken);
+                window.history.replaceState({}, document.title, window.location.pathname);
+                await updateUI();
+            } else {
+                // Check if we have a stored token
+                const stored = localStorage.getItem('access_token');
+                if (stored) {
+                    session = { access_token: stored };
+                    await updateUI();
+                } else {
+                    showAuthUI();
+                }
+            }
+        }
+
+        async function signInWithGithub() {
+            try {
+                const projectId = 'cqudsqhlchxoqcswxpol';
+                const redirectUrl = window.location.origin + window.location.pathname;
+                const authUrl = `${BASE_URL}/auth/v1/authorize?provider=github&client_id=YOUR_GITHUB_CLIENT_ID&redirect_to=${encodeURIComponent(redirectUrl)}&response_type=token&scope=read:user user:email`;
+                // Note: You must set up GitHub OAuth app and configure it in Supabase dashboard
+                window.location.href = authUrl;
+            } catch (error) {
+                showAuthError(`Sign in error: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+
+        async function logout() {
+            localStorage.removeItem('access_token');
+            session = null;
+            showAuthUI();
+        }
+
+        function showAuthUI() {
+            document.getElementById('auth-content').classList.remove('hidden');
+            document.getElementById('user-content').classList.add('hidden');
+            document.getElementById('app-section').classList.add('hidden');
+        }
+
+        async function updateUI() {
+            if (session && session.access_token) {
+                document.getElementById('auth-content').classList.add('hidden');
+                document.getElementById('user-content').classList.remove('hidden');
+                document.getElementById('app-section').classList.remove('hidden');
+                
+                // Decode JWT to show user email
+                try {
+                    const payload = JSON.parse(atob(session.access_token.split('.')[1]));
+                    document.getElementById('user-email').textContent = payload.email || 'User';
+                } catch (e) {
+                    document.getElementById('user-email').textContent = 'Authenticated User';
+                }
+                
+                // Auto-load todos
+                await listTodos();
+            } else {
+                showAuthUI();
+            }
+        }
+
+        function showAuthError(message) {
+            const error = document.getElementById('auth-error');
+            error.textContent = `❌ ${message}`;
+            error.classList.remove('hidden');
+        }
+
+        async function makeAuthenticatedRequest(url, options = {}) {
+            if (!session || !session.access_token) {
+                throw new Error('Not authenticated');
+            }
+
+            return fetch(url, {
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`,
+                    ...options.headers
+                }
+            });
+        }
 
         async function listTodos() {
             const output = document.getElementById('list-output');
@@ -89,21 +213,26 @@
             output.className = 'output loading';
 
             try {
-                const response = await fetch(`${BASE_URL}/list-todos`, {
-                    method: 'GET',
-                    headers: { 'Content-Type': 'application/json' }
+                const response = await makeAuthenticatedRequest(`${FUNCTIONS_URL}/list-todos`, {
+                    method: 'GET'
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+                    const error = await response.json();
+                    throw new Error(error.error || `HTTP ${response.status}`);
                 }
 
                 const data = await response.json();
                 output.className = 'output success';
-                output.textContent = JSON.stringify(data, null, 2);
+                const todos = data.todos || [];
+                if (todos.length === 0) {
+                    output.textContent = '✅ No todos yet. Create one!';
+                } else {
+                    output.textContent = todos.map((t, i) => `${i + 1}. ${t.completed ? '✅' : '⏳'} ${t.title}`).join('\n');
+                }
             } catch (error) {
                 output.className = 'output error';
-                output.textContent = `❌ Error: ${error.message}`;
+                output.textContent = `❌ Error: ${error instanceof Error ? error.message : String(error)}`;
             }
         }
 
@@ -121,28 +250,31 @@
             output.className = 'output loading';
 
             try {
-                const response = await fetch(`${BASE_URL}/create-todo`, {
+                const response = await makeAuthenticatedRequest(`${FUNCTIONS_URL}/create-todo`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ title, completed: false })
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+                    const error = await response.json();
+                    throw new Error(error.error || `HTTP ${response.status}`);
                 }
 
                 const data = await response.json();
                 output.className = 'output success';
-                output.textContent = `✅ Created!\n\n${JSON.stringify(data, null, 2)}`;
+                output.textContent = `✅ Created: "${data.todo.title}"`;
                 document.getElementById('todo-title').value = '';
+                
+                // Refresh list
+                setTimeout(listTodos, 500);
             } catch (error) {
                 output.className = 'output error';
-                output.textContent = `❌ Error: ${error.message}`;
+                output.textContent = `❌ Error: ${error instanceof Error ? error.message : String(error)}`;
             }
         }
 
-        // Auto-load todos on page load
-        window.addEventListener('load', listTodos);
+        // Initialize on page load
+        window.addEventListener('load', init);
     </script>
 </body>
 </html>

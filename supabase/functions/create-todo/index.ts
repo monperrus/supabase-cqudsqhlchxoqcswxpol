@@ -83,6 +83,27 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  const authHeader = req.headers.get("authorization");
+  let userId: string | null = null;
+
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      userId = payload.sub;
+    } catch {
+      return jsonResponse(
+        { error: "Invalid authorization token." },
+        401,
+      );
+    }
+  } else {
+    return jsonResponse(
+      { error: "Authorization required. Please sign in with GitHub." },
+      401,
+    );
+  }
+
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: {
       autoRefreshToken: false,
@@ -93,6 +114,7 @@ Deno.serve(async (req: Request) => {
   const { data, error } = await supabase
     .from("todos")
     .insert({
+      user_id: userId,
       title: normalizedTitle,
       completed: completed ?? false,
     })

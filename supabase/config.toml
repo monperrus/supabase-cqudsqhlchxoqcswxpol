@@ -5,7 +5,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.list-todos]
-verify_jwt = false
+verify_jwt = true
 
 [functions.create-todo]
-verify_jwt = false
+verify_jwt = true
