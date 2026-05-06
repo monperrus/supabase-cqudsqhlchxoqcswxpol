@@ -59,7 +59,7 @@ async function hmacB64url(data: string, secret: string): Promise<string> {
   return bytesToB64url(new Uint8Array(sig));
 }
 
-// Lightweight signed JWT (HS256) for passing OAuth state through redirects
+// Lightweight signed JWT (HS256) — used only for device flow access tokens
 async function signJwt(payload: Record<string, unknown>, ttl = 600): Promise<string> {
   const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const now = Math.floor(Date.now() / 1000);
@@ -67,19 +67,6 @@ async function signJwt(payload: Record<string, unknown>, ttl = 600): Promise<str
   const p = textToB64url(JSON.stringify({ ...payload, iat: now, exp: now + ttl }));
   const sig = await hmacB64url(`${h}.${p}`, secret);
   return `${h}.${p}.${sig}`;
-}
-
-async function verifyJwt(token: string): Promise<Record<string, unknown> | null> {
-  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const expected = await hmacB64url(`${parts[0]}.${parts[1]}`, secret);
-  if (expected !== parts[2]) return null;
-  try {
-    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1])));
-    if (payload.exp < Date.now() / 1000) return null;
-    return payload;
-  } catch { return null; }
 }
 
 // AES-GCM encrypt plaintext using code_challenge as key material.
@@ -174,7 +161,7 @@ async function handleRegister(req: Request) {
   });
 }
 
-// Step 1: MCP client → /authorize → signs state JWT, starts Supabase GitHub OAuth
+// Step 1: MCP client → /authorize → stores session in DB, starts Supabase GitHub OAuth
 async function handleAuthorize(req: Request): Promise<Response> {
   const p = new URL(req.url).searchParams;
   const codeChallenge = p.get("code_challenge");
@@ -191,23 +178,29 @@ async function handleAuthorize(req: Request): Promise<Response> {
   }
 
   // Derive a deterministic supabase code_verifier from code_challenge + server secret.
-  // This avoids storing anything in the DB.
   const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabaseCodeVerifier = await hmacB64url(codeChallenge, secret);
   const supabaseCodeChallenge = await sha256b64url(supabaseCodeVerifier);
 
-  // Encode all MCP params in a signed JWT passed through the OAuth state
-  const stateJwt = await signJwt({
-    code_challenge: codeChallenge,
+  // Store all MCP params in DB so redirect_to URL stays short (Supabase allowlist-friendly).
+  const db = serviceClient();
+  const { data: row, error: dbErr } = await db.from("mcp_auth_codes").insert({
+    mcp_code_challenge: codeChallenge,
+    mcp_code_challenge_method: codeChallengeMethod,
     mcp_redirect_uri: redirectUri,
-    mcp_state: state,
     mcp_client_id: clientId,
-  });
+    mcp_state: state,
+    supabase_code_verifier: supabaseCodeVerifier,
+  }).select("id").single();
+
+  if (dbErr || !row) {
+    return jsonResp({ error: "server_error", error_description: dbErr?.message ?? "DB insert failed" }, 500);
+  }
 
   const callbackUrl = `${baseUrl(req)}/callback`;
   const authUrl = new URL(`${Deno.env.get("SUPABASE_URL")}/auth/v1/authorize`);
   authUrl.searchParams.set("provider", "github");
-  authUrl.searchParams.set("redirect_to", `${callbackUrl}?s=${encodeURIComponent(stateJwt)}`);
+  authUrl.searchParams.set("redirect_to", `${callbackUrl}?auth_id=${row.id}`);
   authUrl.searchParams.set("code_challenge", supabaseCodeChallenge);
   authUrl.searchParams.set("code_challenge_method", "S256");
 
@@ -217,25 +210,33 @@ async function handleAuthorize(req: Request): Promise<Response> {
 // Step 2: Supabase redirects here → exchange Supabase code → encrypt token → redirect to MCP client
 async function handleCallback(req: Request): Promise<Response> {
   const p = new URL(req.url).searchParams;
-  const stateJwt = p.get("s");
+  const authId = p.get("auth_id");
   const supabaseCode = p.get("code");
 
-  if (!stateJwt || !supabaseCode) {
-    return new Response("<h1>Error</h1><p>Missing state or code parameter.</p>", {
+  if (!authId || !supabaseCode) {
+    return new Response("<h1>Error</h1><p>Missing auth_id or code parameter.</p>", {
       status: 400, headers: { "Content-Type": "text/html" },
     });
   }
 
-  const st = await verifyJwt(stateJwt);
-  if (!st) {
+  const db = serviceClient();
+  const { data: row, error: rowErr } = await db.from("mcp_auth_codes")
+    .select("*")
+    .eq("id", authId)
+    .is("used_at", null)
+    .single();
+
+  if (rowErr || !row) {
     return new Response("<h1>Error</h1><p>Invalid or expired OAuth session. Please try again.</p>", {
       status: 400, headers: { "Content-Type": "text/html" },
     });
   }
 
-  const codeChallenge = st.code_challenge as string;
-  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const supabaseCodeVerifier = await hmacB64url(codeChallenge, secret);
+  if (new Date(row.expires_at) < new Date()) {
+    return new Response("<h1>Error</h1><p>OAuth session expired. Please try again.</p>", {
+      status: 400, headers: { "Content-Type": "text/html" },
+    });
+  }
 
   // Exchange Supabase auth code for access_token
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -248,7 +249,7 @@ async function handleCallback(req: Request): Promise<Response> {
         "apikey": anonKey,
         "Authorization": `Bearer ${anonKey}`,
       },
-      body: JSON.stringify({ auth_code: supabaseCode, code_verifier: supabaseCodeVerifier }),
+      body: JSON.stringify({ auth_code: supabaseCode, code_verifier: row.supabase_code_verifier }),
     },
   );
 
@@ -268,11 +269,13 @@ async function handleCallback(req: Request): Promise<Response> {
 
   // Encrypt access_token with code_challenge as key material.
   // Only the MCP client (who holds code_verifier) can decrypt it.
-  const authCode = await encryptWithChallenge(access_token, codeChallenge);
+  const authCode = await encryptWithChallenge(access_token, row.mcp_code_challenge as string);
 
-  const dest = new URL(st.mcp_redirect_uri as string);
+  await db.from("mcp_auth_codes").update({ used_at: new Date().toISOString() }).eq("id", authId);
+
+  const dest = new URL(row.mcp_redirect_uri as string);
   dest.searchParams.set("code", authCode);
-  if (st.mcp_state) dest.searchParams.set("state", st.mcp_state as string);
+  if (row.mcp_state) dest.searchParams.set("state", row.mcp_state as string);
 
   return redirect(dest.toString());
 }
