@@ -74,12 +74,7 @@ jobs:
             UID=$(curl -sf \
               "https://${SUPABASE_PROJECT_REF}.supabase.co/auth/v1/admin/users" \
               -H "apikey: ${SRK}" -H "Authorization: Bearer ${SRK}" \
-              | python3 -c "
-import sys, json
-users = json.load(sys.stdin).get('users', [])
-match = [u['id'] for u in users if u.get('email') == 'ci-integration@test.invalid']
-print(match[0] if match else '')
-" 2>/dev/null || true)
+              | python3 -c "import sys, json; users = json.load(sys.stdin).get('users', []); match = [u['id'] for u in users if u.get('email') == 'ci-integration@test.invalid']; print(match[0] if match else '')" 2>/dev/null || true)
           fi
 
           if [ -n "${UID}" ]; then
