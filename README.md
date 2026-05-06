@@ -22,7 +22,6 @@ The database currently manages a single table via migrations:
 
 ## Edge Functions
 
-- `sum-integers` — Accepts two integers (`A` and `b`) via query parameters or JSON body. It returns the payload `{ A, b, sum }`, where `sum` is calculated as `A + 2*b`, making it a quick sample of validation logic.
 - `create-todo` — Validates a JSON payload with `title` (required) and `completed` (optional), then inserts a row into `public.todos` using the service role key. It returns the inserted row or a descriptive error.
 - `list-todos` — Reads all todo records ordered by `id`. It requires the service role key and is intended for trusted server environments.
 

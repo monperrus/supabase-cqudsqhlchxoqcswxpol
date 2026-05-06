@@ -58,44 +58,6 @@ function mcpBody(method: string, params?: Record<string, unknown>): RequestInit 
 }
 
 // ---------------------------------------------------------------------------
-// sum-integers
-// ---------------------------------------------------------------------------
-
-Deno.test("sum-integers GET: valid params → 200 with sum = A + 2*b", async () => {
-  const res = await fetch(`${BASE}/sum-integers?A=3&b=4`);
-  assertEquals(res.status, 200);
-  assertEquals(await res.json(), { A: 3, b: 4, sum: 11 });
-});
-
-Deno.test("sum-integers GET: missing b → 400", async () => {
-  const res = await fetch(`${BASE}/sum-integers?A=3`);
-  assertEquals(res.status, 400);
-  await res.body?.cancel();
-});
-
-Deno.test("sum-integers GET: non-integer params → 400", async () => {
-  const res = await fetch(`${BASE}/sum-integers?A=foo&b=bar`);
-  assertEquals(res.status, 400);
-  await res.body?.cancel();
-});
-
-Deno.test("sum-integers POST: valid JSON → 200", async () => {
-  const res = await fetch(`${BASE}/sum-integers`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ A: 5, b: 2 }),
-  });
-  assertEquals(res.status, 200);
-  assertEquals(await res.json(), { A: 5, b: 2, sum: 9 });
-});
-
-Deno.test("sum-integers PUT → 405", async () => {
-  const res = await fetch(`${BASE}/sum-integers`, { method: "PUT" });
-  assertEquals(res.status, 405);
-  await res.body?.cancel();
-});
-
-// ---------------------------------------------------------------------------
 // create-todo
 // ---------------------------------------------------------------------------
 
