@@ -26,6 +26,77 @@ The database currently manages a single table via migrations:
 - `create-todo` — Validates a JSON payload with `title` (required) and `completed` (optional), then inserts a row into `public.todos` using the service role key. It returns the inserted row or a descriptive error.
 - `list-todos` — Reads all todo records ordered by `id`. It requires the service role key and is intended for trusted server environments.
 
+### todo-mcp-server
+
+The `todo-mcp-server` is a complete OAuth 2.0 server with RFC 8628 Device Flow support for MCP (Model Context Protocol) clients. It authenticates users and provides tools to manage todos via JSON-RPC.
+
+#### Device Flow (RFC 8628)
+
+The Device Flow enables authentication for headless clients (CLI, daemons) without browser redirects.
+
+**Step 1: Request Device Code**
+
+```bash
+curl -X POST https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server/device
+```
+
+Response:
+```json
+{
+  "device_code": "C2FqxC5sF2...",
+  "user_code": "ABCD-1234",
+  "verification_uri": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server/verify",
+  "verification_uri_complete": "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server/verify?user_code=ABCD-1234",
+  "expires_in": 900,
+  "interval": 5
+}
+```
+
+**Step 2: User Authorizes**
+
+The user visits the `verification_uri` (optionally with `?user_code=...`) and enters the user code.
+
+**Step 3: Poll for Token**
+
+The client polls the `/token` endpoint every 5 seconds with the device code:
+
+```bash
+curl -X POST https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server/token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    "device_code": "C2FqxC5sF2..."
+  }'
+```
+
+Possible responses:
+
+- **Pending** (status 400): `{ "error": "authorization_pending" }` — User hasn't authorized yet
+- **Expired** (status 400): `{ "error": "expired_token" }` — Code expired after 15 minutes
+- **Success** (status 200): `{ "access_token": "...", "token_type": "bearer", "expires_in": 3600 }`
+
+Once you receive an `access_token`, use it for MCP requests:
+
+```bash
+curl -X POST https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-server \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }'
+```
+
+#### MCP Tools
+
+Once authenticated, the server provides these tools:
+
+- **list_todos** — List all todos for the authenticated user
+- **create_todo** — Create a new todo (requires `title`)
+- **update_todo** — Update a todo by ID (can update `title` and/or `completed`)
+- **delete_todo** — Delete a todo by ID
+
 ### Required Secrets
 
 Configure secrets in your Supabase project so the functions can reach your database or upstream APIs:
