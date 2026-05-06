@@ -277,31 +277,367 @@ async function handleCallback(req: Request): Promise<Response> {
   return redirect(dest.toString());
 }
 
-// Step 3: MCP client sends code_verifier → decrypt auth code → return access_token
-async function handleToken(req: Request): Promise<Response> {
+// ---- Device Flow (RFC 8628) ----
+
+function generateDeviceCode(): string {
+  // RFC 8628: device_code should be 40-128 chars, unreserved characters
+  return bytesToB64url(crypto.getRandomValues(new Uint8Array(32))).substring(0, 40);
+}
+
+function generateUserCode(): string {
+  // User-friendly code: 8 chars, uppercase + digits, without ambiguous chars (0/O, 1/I/L)
+  const chars = "23456789BCDFGHJKMNPQRTVWXYZ";
+  let code = "";
+  const arr = new Uint8Array(8);
+  crypto.getRandomValues(arr);
+  for (let i = 0; i < 8; i++) code += chars[arr[i] % chars.length];
+  return code.substring(0, 4) + "-" + code.substring(4);
+}
+
+async function handleDeviceRequest(req: Request): Promise<Response> {
+  const db = serviceClient();
+  const deviceCode = generateDeviceCode();
+  const userCode = generateUserCode();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 15 * 60 * 1000); // 15 minutes
+
+  const { error } = await db.from("device_codes").insert({
+    device_code: deviceCode,
+    user_code: userCode,
+    status: "pending",
+    created_at: now.toISOString(),
+    expires_at: expiresAt.toISOString(),
+  });
+
+  if (error) {
+    return jsonResp({ error: "server_error", error_description: error.message }, 500);
+  }
+
+  const verificationUrl = `${baseUrl(req)}/verify`;
+  return jsonResp({
+    device_code: deviceCode,
+    user_code: userCode,
+    verification_uri: verificationUrl,
+    verification_uri_complete: `${verificationUrl}?user_code=${userCode}`,
+    expires_in: 900, // 15 minutes
+    interval: 5, // poll every 5 seconds
+  });
+}
+
+function htmlEscape(str: string): string {
+  return str.replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function handleVerifyPage(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const userCode = url.searchParams.get("user_code");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Device Authentication</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-width: 500px;
+      width: 100%;
+      padding: 40px;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 12px;
+      color: #1f2937;
+    }
+    p {
+      color: #6b7280;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .form-group {
+      margin-bottom: 24px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: #374151;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e5e7eb;
+      border-radius: 8px;
+      font-size: 16px;
+      font-family: monospace;
+      letter-spacing: 1px;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    input.prefilled {
+      background-color: #f9fafb;
+      color: #1f2937;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    .error {
+      background-color: #fee;
+      color: #c33;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      display: none;
+    }
+    .success {
+      background-color: #efe;
+      color: #3c3;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>✓ Device Authentication</h1>
+    <p>Enter the code displayed on your device to authorize access.</p>
+    <div class="error" id="error"></div>
+    <div class="success" id="success">Authorization successful! You can close this window.</div>
+    <form id="form" style="display: none;">
+      <div class="form-group">
+        <label for="userCode">User Code</label>
+        <input type="text" id="userCode" name="userCode" placeholder="XXXX-XXXX" maxlength="9" required style="text-transform: uppercase;">
+      </div>
+      <button type="submit">Authorize</button>
+    </form>
+    <div id="loading" style="text-align: center; padding: 20px;">
+      <p>Loading...</p>
+    </div>
+  </div>
+  <script>
+    const userCodeParam = new URLSearchParams(window.location.search).get('user_code');
+    const form = document.getElementById('form');
+    const loading = document.getElementById('loading');
+    const userCodeInput = document.getElementById('userCode');
+    const errorDiv = document.getElementById('error');
+    const successDiv = document.getElementById('success');
+
+    // Show form after page load
+    setTimeout(() => {
+      loading.style.display = 'none';
+      form.style.display = 'block';
+      if (userCodeParam) {
+        userCodeInput.value = userCodeParam.toUpperCase();
+        userCodeInput.focus();
+      } else {
+        userCodeInput.focus();
+      }
+    }, 100);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = userCodeInput.value.trim().toUpperCase();
+      errorDiv.style.display = 'none';
+      
+      try {
+        const resp = await fetch('${baseUrl(req)}/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_code: code })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.error_description || data.error || 'Invalid code');
+        }
+        successDiv.style.display = 'block';
+        form.style.display = 'none';
+        setTimeout(() => window.close(), 2000);
+      } catch (err) {
+        errorDiv.textContent = err.message;
+        errorDiv.style.display = 'block';
+        userCodeInput.focus();
+        userCodeInput.select();
+      }
+    });
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8", ...cors },
+  });
+}
+
+async function handleVerifyCode(req: Request): Promise<Response> {
   const text = await req.text();
-  // Accept both form-encoded and JSON bodies
-  let grantType: string | null, code: string | null, codeVerifier: string | null;
+  let userCode: string | null = null;
+
   if ((req.headers.get("content-type") ?? "").includes("application/json")) {
     try {
       const j = JSON.parse(text);
-      grantType = j.grant_type; code = j.code; codeVerifier = j.code_verifier;
-    } catch { return jsonResp({ error: "invalid_request" }, 400); }
+      userCode = (j.user_code as string)?.toUpperCase();
+    } catch {
+      return jsonResp({ error: "invalid_request", error_description: "Invalid JSON" }, 400);
+    }
   } else {
     const b = new URLSearchParams(text);
-    grantType = b.get("grant_type"); code = b.get("code"); codeVerifier = b.get("code_verifier");
+    userCode = b.get("user_code")?.toUpperCase() ?? null;
   }
 
-  if (grantType !== "authorization_code" || !code || !codeVerifier) {
-    return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
+  if (!userCode) {
+    return jsonResp({ error: "invalid_request", error_description: "user_code is required" }, 400);
   }
 
-  const accessToken = await decryptWithVerifier(code, codeVerifier);
-  if (!accessToken) {
-    return jsonResp({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
+  const db = serviceClient();
+  const { data: dc, error: dcErr } = await db.from("device_codes")
+    .select("*")
+    .eq("user_code", userCode)
+    .single();
+
+  if (dcErr || !dc) {
+    return jsonResp({ error: "invalid_grant", error_description: "Invalid user code" }, 400);
   }
 
-  return jsonResp({ access_token: accessToken, token_type: "bearer" });
+  if (dc.status !== "pending") {
+    return jsonResp({ error: "invalid_grant", error_description: `Code is ${dc.status}` }, 400);
+  }
+
+  const expiresAt = new Date(dc.expires_at);
+  if (expiresAt < new Date()) {
+    await db.from("device_codes").update({ status: "expired" }).eq("id", dc.id);
+    return jsonResp({ error: "expired_token", error_description: "Code has expired" }, 400);
+  }
+
+  // For now, auto-approve all codes. In production, you'd require user login here.
+  // Generate a test access token that can be validated against Supabase
+  const testUserId = Deno.env.get("TEST_USER_ID") || "00000000-0000-0000-0000-000000000000";
+  const accessToken = await signJwt({ sub: testUserId, device_code: dc.device_code }, 3600);
+
+  const { error: updateErr } = await db.from("device_codes")
+    .update({ status: "approved", user_id: testUserId })
+    .eq("id", dc.id);
+
+  if (updateErr) {
+    return jsonResp({ error: "server_error", error_description: updateErr.message }, 500);
+  }
+
+  return jsonResp({ success: true, message: "Device authorized" });
+}
+
+// Step 3: MCP client sends code_verifier → decrypt auth code → return access_token
+// Also supports device_code grant for RFC 8628 Device Flow
+async function handleToken(req: Request): Promise<Response> {
+  const text = await req.text();
+  // Accept both form-encoded and JSON bodies
+  let grantType: string | null, code: string | null, codeVerifier: string | null, deviceCode: string | null;
+  if ((req.headers.get("content-type") ?? "").includes("application/json")) {
+    try {
+      const j = JSON.parse(text);
+      grantType = j.grant_type;
+      code = j.code;
+      codeVerifier = j.code_verifier;
+      deviceCode = j.device_code;
+    } catch {
+      return jsonResp({ error: "invalid_request" }, 400);
+    }
+  } else {
+    const b = new URLSearchParams(text);
+    grantType = b.get("grant_type");
+    code = b.get("code");
+    codeVerifier = b.get("code_verifier");
+    deviceCode = b.get("device_code");
+  }
+
+  if (grantType === "authorization_code") {
+    if (!code || !codeVerifier) {
+      return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
+    }
+    const accessToken = await decryptWithVerifier(code, codeVerifier);
+    if (!accessToken) {
+      return jsonResp({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
+    }
+    return jsonResp({ access_token: accessToken, token_type: "bearer" });
+  } else if (grantType === "urn:ietf:params:oauth:grant-type:device_code") {
+    if (!deviceCode) {
+      return jsonResp({ error: "invalid_request", error_description: "device_code is required" }, 400);
+    }
+
+    const db = serviceClient();
+    const { data: dc, error: dcErr } = await db.from("device_codes")
+      .select("*")
+      .eq("device_code", deviceCode)
+      .single();
+
+    if (dcErr || !dc) {
+      return jsonResp({ error: "invalid_grant", error_description: "Invalid device code" }, 400);
+    }
+
+    const expiresAt = new Date(dc.expires_at);
+    if (expiresAt < new Date()) {
+      await db.from("device_codes").update({ status: "expired" }).eq("id", dc.id);
+      return jsonResp({ error: "expired_token", error_description: "Code has expired" }, 400);
+    }
+
+    if (dc.status === "pending") {
+      return jsonResp({ error: "authorization_pending", error_description: "User has not yet authorized" }, 400);
+    }
+
+    if (dc.status === "denied") {
+      return jsonResp({ error: "access_denied", error_description: "Authorization was denied" }, 400);
+    }
+
+    if (dc.status === "approved" && dc.user_id) {
+      const accessToken = await signJwt({ sub: dc.user_id, device_code: deviceCode }, 3600);
+      return jsonResp({ access_token: accessToken, token_type: "bearer", expires_in: 3600 });
+    }
+
+    return jsonResp({ error: "server_error", error_description: "Invalid device code state" }, 500);
+  } else {
+    return jsonResp(
+      { error: "unsupported_grant_type", error_description: "Grant type not supported" },
+      400,
+    );
+  }
 }
 
 // ---- MCP JSON-RPC ----
@@ -493,6 +829,11 @@ Deno.serve(async (req: Request) => {
   if (sub === "/authorize" && req.method === "GET") return handleAuthorize(req);
   if (sub === "/callback" && req.method === "GET") return handleCallback(req);
   if (sub === "/token" && req.method === "POST") return handleToken(req);
+
+  // Device Flow (RFC 8628)
+  if (sub === "/device" && req.method === "POST") return handleDeviceRequest(req);
+  if (sub === "/verify" && req.method === "GET") return handleVerifyPage(req);
+  if (sub === "/verify" && req.method === "POST") return handleVerifyCode(req);
 
   return handleMCP(req);
 });
