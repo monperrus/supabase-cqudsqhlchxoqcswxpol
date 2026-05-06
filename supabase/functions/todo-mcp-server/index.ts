@@ -131,6 +131,36 @@ function handleAuthServerMetadata(req: Request) {
   });
 }
 
+// The Claude Code MCP SDK (Vx1) looks for AS metadata at three paths. For a
+// server URL with a non-root pathname it tries (in order):
+//   1. origin/.well-known/oauth-authorization-server{pathname}   → 401 (Supabase root)
+//   2. origin/.well-known/openid-configuration{pathname}         → 401 (Supabase root)
+//   3. origin{pathname}/.well-known/openid-configuration         ← THIS IS US
+//
+// It never tries origin{pathname}/.well-known/oauth-authorization-server, so we
+// must serve an OpenID Connect compatible document at path #3.
+// The ti$ Zod schema used by the SDK for OIDC requires: issuer, authorization_endpoint,
+// token_endpoint, jwks_uri, subject_types_supported,
+// id_token_signing_alg_values_supported, response_types_supported.
+function handleOidcMetadata(req: Request) {
+  const base = baseUrl(req);
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  return jsonResp({
+    issuer: base,
+    authorization_endpoint: `${base}/authorize`,
+    token_endpoint: `${base}/token`,
+    registration_endpoint: `${base}/register`,
+    // jwks_uri is required by the OIDC schema; point to Supabase's JWKS endpoint.
+    jwks_uri: `${supabaseUrl}/auth/v1/.well-known/jwks.json`,
+    subject_types_supported: ["public"],
+    id_token_signing_alg_values_supported: ["RS256"],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  });
+}
+
 async function handleRegister(req: Request) {
   let meta: Record<string, unknown> = {};
   try { meta = await req.json(); } catch { /* no body is fine */ }
@@ -459,6 +489,7 @@ Deno.serve(async (req: Request) => {
 
   if (sub === "/.well-known/oauth-protected-resource" && req.method === "GET") return handleResourceMetadata(req);
   if (sub === "/.well-known/oauth-authorization-server" && req.method === "GET") return handleAuthServerMetadata(req);
+  if (sub === "/.well-known/openid-configuration" && req.method === "GET") return handleOidcMetadata(req);
   if (sub === "/register" && req.method === "POST") return handleRegister(req);
   if (sub === "/authorize" && req.method === "GET") return handleAuthorize(req);
   if (sub === "/callback" && req.method === "GET") return handleCallback(req);
