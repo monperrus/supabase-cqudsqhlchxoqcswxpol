@@ -49,6 +49,51 @@ jobs:
       - name: Deploy all Edge Functions
         run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_REF"
 
+      - name: Run integration tests
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          export PATH="$HOME/.deno/bin:$PATH"
+
+          # Resolve the service-role key from the management API so we can call
+          # the Supabase Auth Admin API without storing it as a separate secret.
+          SRK=$(curl -sf \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/api-keys" \
+            | python3 -c "import sys,json; print(next(k['api_key'] for k in json.load(sys.stdin) if k['name']=='service_role'))")
+
+          # Create the integration-test user (idempotent: 422 if already exists).
+          RESP=$(curl -s -X POST \
+            "https://${SUPABASE_PROJECT_REF}.supabase.co/auth/v1/admin/users" \
+            -H "apikey: ${SRK}" -H "Authorization: Bearer ${SRK}" \
+            -H "Content-Type: application/json" \
+            -d '{"email":"ci-integration@test.invalid","email_confirm":true,"password":"ci_integration_2026!"}')
+          UID=$(echo "${RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+
+          if [ -z "${UID}" ]; then
+            # User already existed — look up by listing and filtering.
+            UID=$(curl -sf \
+              "https://${SUPABASE_PROJECT_REF}.supabase.co/auth/v1/admin/users" \
+              -H "apikey: ${SRK}" -H "Authorization: Bearer ${SRK}" \
+              | python3 -c "
+import sys, json
+users = json.load(sys.stdin).get('users', [])
+match = [u['id'] for u in users if u.get('email') == 'ci-integration@test.invalid']
+print(match[0] if match else '')
+" 2>/dev/null || true)
+          fi
+
+          if [ -n "${UID}" ]; then
+            echo "Test user UUID: ${UID}"
+            # Expose to Supabase function as TEST_USER_ID so MCP server uses
+            # the same real user for DB writes.
+            supabase secrets set --project-ref "${SUPABASE_PROJECT_REF}" TEST_USER_ID="${UID}"
+            export SUPABASE_TEST_USER_ID="${UID}"
+          else
+            echo "Warning: could not resolve test user — DB-writing tests will be skipped"
+          fi
+
+          deno test --allow-net --allow-env tests/integration.test.ts
+
       - name: Add MCP callback to Supabase auth redirect allowlist
         run: |
           CALLBACK_URL="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/todo-mcp-server/callback"

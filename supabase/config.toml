@@ -1,3 +1,6 @@
+[functions.sum-integers]
+verify_jwt = false
+
 [functions.todo-skill]
 verify_jwt = false
 
