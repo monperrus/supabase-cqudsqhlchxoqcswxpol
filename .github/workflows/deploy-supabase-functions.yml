@@ -39,6 +39,11 @@ jobs:
       - name: Push database migrations
         run: |
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
+          # The first three migrations were applied to the remote with different
+          # timestamps before this workflow existed. Repair the history so that
+          # db push only runs the migrations that are genuinely new.
+          supabase migration repair --status reverted 20260418172638 20260418172725 20260505205404
+          supabase migration repair --status applied  20260418193000 20260418193500 20260505234000
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
       - name: Deploy all Edge Functions
