@@ -134,7 +134,7 @@ function handleOidcMetadata(req: Request) {
 function isAllowedClientRedirectUri(redirectUri: string): boolean {
   try {
     const url = new URL(redirectUri);
-    if (url.protocol === "https:" && url.hostname === "claude.ai") {
+    if (url.protocol === "https:" && (url.hostname === "chatgpt.com" || url.hostname === "claude.ai")) {
       return true;
     }
     if (url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1")) {
@@ -160,7 +160,7 @@ async function handleRegister(req: Request) {
   if (Array.isArray(meta.redirect_uris) && redirectUris.length === 0) {
     return jsonResp({
       error: "invalid_redirect_uri",
-      error_description: "Only Claude.ai and loopback OAuth redirect URIs are allowed",
+      error_description: "Only ChatGPT, Claude.ai, and loopback OAuth redirect URIs are allowed",
     }, 400);
   }
 
@@ -188,7 +188,7 @@ async function handleAuthorize(req: Request): Promise<Response> {
   if (!isAllowedClientRedirectUri(redirectUri)) {
     return jsonResp({
       error: "invalid_request",
-      error_description: "redirect_uri must be a Claude.ai or loopback OAuth callback",
+      error_description: "redirect_uri must be a ChatGPT, Claude.ai, or loopback OAuth callback",
     }, 400);
   }
   if (codeChallengeMethod !== "S256") {

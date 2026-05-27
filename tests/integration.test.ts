@@ -384,6 +384,18 @@ Deno.test("documents-mcp-server: rejects github.io OAuth redirect registration",
   await res.body?.cancel();
 });
 
+Deno.test("documents-mcp-server: accepts chatgpt.com OAuth redirect registration", async () => {
+  const redirectUri = "https://chatgpt.com/example/mcp/auth_callback";
+  const res = await fetch(`${DOCS_MCP}/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ redirect_uris: [redirectUri] }),
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.redirect_uris, [redirectUri]);
+});
+
 Deno.test({
   name: "documents-mcp-server: tools/list returns document tools",
   ignore: !HAS_MCP_AUTH,
