@@ -631,6 +631,28 @@ const TOOLS = [
       },
       required: ["title", "content"],
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", const: "text" },
+              text: {
+                type: "string",
+                description: "Confirmation message: 'Added note \"<title>\".' or 'Updated note \"<title>\".'",
+              },
+            },
+            required: ["type", "text"],
+          },
+          minItems: 1,
+          maxItems: 1,
+        },
+      },
+      required: ["content"],
+    },
   },
   {
     name: "search_markdown_note",
@@ -641,6 +663,28 @@ const TOOLS = [
         query: { type: "string", description: "Search query matched against title and content" },
       },
       required: ["query"],
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", const: "text" },
+              text: {
+                type: "string",
+                description: "Newline-separated list of matching notes. Each entry is formatted as:\n- \"<title>\"\n  snippet: <first 180 chars of content>\nOr 'No matching notes found.' when there are no results.",
+              },
+            },
+            required: ["type", "text"],
+          },
+          minItems: 1,
+          maxItems: 1,
+        },
+      },
+      required: ["content"],
     },
   },
   {
@@ -653,11 +697,55 @@ const TOOLS = [
       },
       required: ["title"],
     },
+    outputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", const: "text" },
+              text: {
+                type: "string",
+                description: "Full Markdown content of the note, prefixed with '# <title>'. Multiple matches separated by '---'. Or 'No note found with title \"<title>\".' when not found.",
+              },
+            },
+            required: ["type", "text"],
+          },
+          minItems: 1,
+          maxItems: 1,
+        },
+      },
+      required: ["content"],
+    },
   },
   {
     name: "whoami",
     description: "Show the connected OAuth user",
     inputSchema: { type: "object", properties: {}, required: [] },
+    outputSchema: {
+      type: "object",
+      properties: {
+        content: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", const: "text" },
+              text: {
+                type: "string",
+                description: "Connected user info: 'Connected as <username> via <oauth_provider>.'",
+              },
+            },
+            required: ["type", "text"],
+          },
+          minItems: 1,
+          maxItems: 1,
+        },
+      },
+      required: ["content"],
+    },
   },
 ];
 
