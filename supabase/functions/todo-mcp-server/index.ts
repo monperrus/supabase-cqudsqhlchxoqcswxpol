@@ -59,7 +59,7 @@ async function hmacB64url(data: string, secret: string): Promise<string> {
   return bytesToB64url(new Uint8Array(sig));
 }
 
-// Lightweight signed JWT (HS256) — used only for device flow access tokens
+// Lightweight signed JWT (HS256) — used only for local device flow access tokens
 async function signJwt(payload: Record<string, unknown>, ttl = 600): Promise<string> {
   const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const now = Math.floor(Date.now() / 1000);
@@ -67,6 +67,41 @@ async function signJwt(payload: Record<string, unknown>, ttl = 600): Promise<str
   const p = textToB64url(JSON.stringify({ ...payload, iat: now, exp: now + ttl }));
   const sig = await hmacB64url(`${h}.${p}`, secret);
   return `${h}.${p}.${sig}`;
+}
+
+async function verifyLocalJwt(token: string): Promise<Record<string, unknown> | null> {
+  try {
+    const [h, p, sig] = token.split(".");
+    if (!h || !p || !sig) return null;
+
+    const header = JSON.parse(new TextDecoder().decode(b64urlToBytes(h)));
+    if (header.alg !== "HS256") return null;
+
+    const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    const signatureBytes = b64urlToBytes(sig);
+    const signature = new ArrayBuffer(signatureBytes.byteLength);
+    new Uint8Array(signature).set(signatureBytes);
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signature,
+      new TextEncoder().encode(`${h}.${p}`),
+    );
+    if (!valid) return null;
+
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(p)));
+    if (typeof payload.exp !== "number" || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 // AES-GCM encrypt plaintext using code_challenge as key material.
@@ -653,8 +688,57 @@ const mcpErr = (id: string | number, code: number, message: string): MCPResp => 
   jsonrpc: "2.0", id, error: { code, message },
 });
 
+type OAuthUserResult = { ok: true; userId: string } | { ok: false; message: string };
+
+function quoteHeaderValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function oauthUnauthorized(req: Request, message: string): Response {
+  const resourceMetadata = `${baseUrl(req)}/.well-known/oauth-protected-resource`;
+  return jsonResp({ error: "unauthorized", error_description: message }, 401, {
+    "WWW-Authenticate": `Bearer realm="todo-mcp-server", resource_metadata="${
+      quoteHeaderValue(resourceMetadata)
+    }"`,
+  });
+}
+
+async function getOAuthUser(req: Request): Promise<OAuthUserResult> {
+  const authHeader = req.headers.get("authorization");
+  const match = authHeader?.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  if (!token) {
+    return { ok: false, message: "OAuth bearer token required" };
+  }
+
+  const localPayload = await verifyLocalJwt(token);
+  if (typeof localPayload?.sub === "string") {
+    return { ok: true, userId: localPayload.sub };
+  }
+
+  try {
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { auth: { autoRefreshToken: false, persistSession: false } },
+    );
+    const { data, error } = await supabase.auth.getUser(token);
+    if (!error && data.user) {
+      return { ok: true, userId: data.user.id };
+    }
+  } catch {
+    // Treat auth service failures the same as invalid bearer tokens.
+  }
+
+  return { ok: false, message: "Invalid or expired OAuth bearer token" };
+}
+
 async function handleMCP(req: Request): Promise<Response> {
   if (req.method !== "POST") return jsonResp({ error: "Use POST" }, 405);
+
+  const auth = await getOAuthUser(req);
+  if (!auth.ok) return oauthUnauthorized(req, auth.message);
+
   if (!(req.headers.get("content-type") ?? "").includes("application/json")) {
     return jsonResp({ error: "Content-Type must be application/json" }, 415);
   }
@@ -664,28 +748,7 @@ async function handleMCP(req: Request): Promise<Response> {
   if (mcp.jsonrpc !== "2.0" || !mcp.method) return jsonResp({ error: "Invalid JSON-RPC" }, 400);
 
   const reqId = mcp.id ?? Date.now();
-
-  // Verify Bearer token using Supabase auth
-  const authHeader = req.headers.get("authorization");
-  let userId: string | null = null;
-
-  if (authHeader) {
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { auth: { autoRefreshToken: false, persistSession: false } },
-    );
-    const { data, error } = await supabase.auth.getUser(token);
-    if (!error && data.user) userId = data.user.id;
-  }
-
-  // For development/testing: allow a test user if no auth is provided and verify_jwt is false
-  if (!userId) {
-    // Use a stable test user ID for development
-    const testUserId = Deno.env.get("TEST_USER_ID") || "00000000-0000-0000-0000-000000000000";
-    userId = testUserId;
-  }
+  const userId = auth.userId;
 
   let resp: MCPResp;
   try {

@@ -83,6 +83,18 @@ jobs:
             # the same real user for DB writes.
             supabase secrets set --project-ref "${SUPABASE_PROJECT_REF}" TEST_USER_ID="${UID}"
             export SUPABASE_TEST_USER_ID="${UID}"
+
+            TOKEN_RESP=$(curl -s -X POST \
+              "https://${SUPABASE_PROJECT_REF}.supabase.co/auth/v1/token?grant_type=password" \
+              -H "apikey: ${SRK}" -H "Authorization: Bearer ${SRK}" \
+              -H "Content-Type: application/json" \
+              -d '{"email":"ci-integration@test.invalid","password":"ci_integration_2026!"}')
+            MCP_TOKEN=$(echo "${TOKEN_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+            if [ -n "${MCP_TOKEN}" ]; then
+              export SUPABASE_MCP_ACCESS_TOKEN="${MCP_TOKEN}"
+            else
+              echo "Warning: could not resolve MCP access token — authenticated MCP tests will be skipped"
+            fi
           else
             echo "Warning: could not resolve test user — DB-writing tests will be skipped"
           fi

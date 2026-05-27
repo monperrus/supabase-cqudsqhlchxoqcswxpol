@@ -12,8 +12,8 @@
  * verification, so we pass a structurally-valid fake token built around the
  * test user ID.
  *
- * todo-mcp-server falls back to the TEST_USER_ID function secret when auth
- * fails; CI sets that secret to the same UUID.
+ * todo-mcp-server requires an OAuth bearer token. Set SUPABASE_MCP_ACCESS_TOKEN
+ * to run authenticated MCP tests against the live deployment.
  */
 
 import { assertEquals, assertExists } from "jsr:@std/assert";
@@ -24,6 +24,8 @@ const BASE = "https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1";
 // When absent, any test that inserts into the DB is skipped.
 const TEST_USER = Deno.env.get("SUPABASE_TEST_USER_ID") ?? "";
 const HAS_USER = TEST_USER.length > 0;
+const MCP_ACCESS_TOKEN = Deno.env.get("SUPABASE_MCP_ACCESS_TOKEN") ?? "";
+const HAS_MCP_AUTH = MCP_ACCESS_TOKEN.length > 0;
 
 /** Build a structurally-valid JWT the functions can base64-decode. */
 function fakeJwt(userId: string): string {
@@ -47,12 +49,14 @@ const ANON_HDR = `Bearer ${fakeJwt("00000000-0000-0000-0000-000000000000")}`;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mcpBody(method: string, params?: Record<string, unknown>): RequestInit {
+function mcpBody(method: string, params?: Record<string, unknown>, authorization = ""): RequestInit {
   const body: Record<string, unknown> = { jsonrpc: "2.0", id: 1, method };
   if (params !== undefined) body.params = params;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authorization) headers.Authorization = authorization;
   return {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   };
 }
@@ -219,39 +223,74 @@ Deno.test("update-todo GET → 405", async () => {
 // ---------------------------------------------------------------------------
 
 const MCP = `${BASE}/todo-mcp-server`;
+const MCP_AUTH_HDR = HAS_MCP_AUTH ? `Bearer ${MCP_ACCESS_TOKEN}` : "";
 
-Deno.test("todo-mcp-server: initialize returns protocol version", async () => {
+Deno.test("todo-mcp-server: no auth returns 401", async () => {
   const res = await fetch(MCP, mcpBody("initialize"));
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.result.protocolVersion, "2024-11-05");
-  assertEquals(body.result.serverInfo.name, "todo-mcp-server");
+  assertEquals(res.status, 401);
+  assertEquals(res.headers.get("www-authenticate")?.includes("resource_metadata"), true);
+  await res.body?.cancel();
 });
 
-Deno.test("todo-mcp-server: tools/list returns the 4 expected tools", async () => {
-  const res = await fetch(MCP, mcpBody("tools/list"));
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  const names: string[] = body.result.tools.map((t: { name: string }) => t.name).sort();
-  assertEquals(names, ["create_todo", "delete_todo", "list_todos", "update_todo"]);
+Deno.test("todo-mcp-server: invalid bearer token returns 401", async () => {
+  const res = await fetch(MCP, mcpBody("initialize", undefined, "Bearer invalid-token"));
+  assertEquals(res.status, 401);
+  await res.body?.cancel();
 });
 
-Deno.test("todo-mcp-server: list_todos returns content array", async () => {
-  const res = await fetch(MCP, mcpBody("tools/call", { name: "list_todos", arguments: {} }));
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertExists(body.result.content);
-  assertEquals(Array.isArray(body.result.content), true);
+Deno.test("todo-mcp-server: missing content type with no auth still returns 401", async () => {
+  const res = await fetch(MCP, {
+    method: "POST",
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+  });
+  assertEquals(res.status, 401);
+  await res.body?.cancel();
+});
+
+Deno.test({
+  name: "todo-mcp-server: initialize returns protocol version",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("initialize", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(body.result.protocolVersion, "2024-11-05");
+    assertEquals(body.result.serverInfo.name, "todo-mcp-server");
+  },
+});
+
+Deno.test({
+  name: "todo-mcp-server: tools/list returns the 4 expected tools",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("tools/list", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    const names: string[] = body.result.tools.map((t: { name: string }) => t.name).sort();
+    assertEquals(names, ["create_todo", "delete_todo", "list_todos", "update_todo"]);
+  },
+});
+
+Deno.test({
+  name: "todo-mcp-server: list_todos returns content array",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("tools/call", { name: "list_todos", arguments: {} }, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.result.content);
+    assertEquals(Array.isArray(body.result.content), true);
+  },
 });
 
 Deno.test({
   name: "todo-mcp-server: create_todo then delete_todo round-trip",
-  ignore: !HAS_USER,
+  ignore: !HAS_MCP_AUTH,
   fn: async () => {
     // Create
     const createRes = await fetch(
       MCP,
-      mcpBody("tools/call", { name: "create_todo", arguments: { title: "MCP Integration Test" } }),
+      mcpBody("tools/call", { name: "create_todo", arguments: { title: "MCP Integration Test" } }, MCP_AUTH_HDR),
     );
     assertEquals(createRes.status, 200);
     const createBody = await createRes.json();
@@ -262,25 +301,36 @@ Deno.test({
     const id = match[1];
 
     // Delete
-    const deleteRes = await fetch(MCP, mcpBody("tools/call", { name: "delete_todo", arguments: { id } }));
+    const deleteRes = await fetch(
+      MCP,
+      mcpBody("tools/call", { name: "delete_todo", arguments: { id } }, MCP_AUTH_HDR),
+    );
     assertEquals(deleteRes.status, 200);
     const deleteBody = await deleteRes.json();
     assertEquals(deleteBody.result.content[0].text, `Deleted todo ID: ${id}`);
   },
 });
 
-Deno.test("todo-mcp-server: unknown method returns JSON-RPC error -32601", async () => {
-  const res = await fetch(MCP, mcpBody("unknown/method"));
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertExists(body.error);
-  assertEquals(body.error.code, -32601);
+Deno.test({
+  name: "todo-mcp-server: unknown method returns JSON-RPC error -32601",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("unknown/method", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32601);
+  },
 });
 
-Deno.test("todo-mcp-server: create_todo without title returns JSON-RPC error -32602", async () => {
-  const res = await fetch(MCP, mcpBody("tools/call", { name: "create_todo", arguments: {} }));
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  assertExists(body.error);
-  assertEquals(body.error.code, -32602);
+Deno.test({
+  name: "todo-mcp-server: create_todo without title returns JSON-RPC error -32602",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("tools/call", { name: "create_todo", arguments: {} }, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32602);
+  },
 });
