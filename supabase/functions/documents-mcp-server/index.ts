@@ -564,32 +564,14 @@ async function callNamedTool(
       const query = requiredString(args, "query");
       if (!query) return mcpErr(reqId, -32602, "query is required");
 
-      const titleResult = await db.from("markdown_documents")
-        .select("id, title, content, updated_at")
-        .eq("user_id", user.id)
-        .ilike("title", `%${query}%`)
-        .order("updated_at", { ascending: false })
-        .limit(10);
-      if (titleResult.error) throw new Error(titleResult.error.message);
+      const { data, error } = await db.rpc("search_markdown_notes", { uid: user.id, q: query });
+      if (error) throw new Error(error.message);
 
-      const contentResult = await db.from("markdown_documents")
-        .select("id, title, content, updated_at")
-        .eq("user_id", user.id)
-        .ilike("content", `%${query}%`)
-        .order("updated_at", { ascending: false })
-        .limit(10);
-      if (contentResult.error) throw new Error(contentResult.error.message);
+      if (!data || data.length === 0) {
+        return mcpOk(reqId, { content: [{ type: "text", text: "No matching notes found." }] });
+      }
 
-      const byTitle = new Map<string, { id: number; title: string; content: string; updated_at: string }>();
-      for (const note of titleResult.data ?? []) byTitle.set(note.title, note);
-      for (const note of contentResult.data ?? []) byTitle.set(note.title, note);
-      const data = [...byTitle.values()]
-        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-        .slice(0, 10);
-
-      if (!data.length) return mcpOk(reqId, { content: [{ type: "text", text: "No matching notes found." }] });
-
-      const text = data.map((note: { title: string; content: string }) => {
+      const text = (data as { title: string; content: string }[]).map((note) => {
         const snippet = note.content.replace(/\s+/g, " ").slice(0, 180);
         return `- "${note.title}"\n  snippet: ${snippet}`;
       }).join("\n");

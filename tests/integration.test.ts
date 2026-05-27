@@ -515,16 +515,25 @@ Deno.test({
     assertEquals(updateText.includes("Updated note"), true);
     assertEquals(updateText.includes(uniqueTitle), true);
 
-    // Search finds the note and exposes the title (no ID in output)
+    // Single-keyword search finds the note
     const searchRes = await fetch(
       DOCS_MCP,
-      mcpBody("tools/call", { name: "search_markdown_note", arguments: { query: "needle xyz" } }, MCP_AUTH_HDR),
+      mcpBody("tools/call", { name: "search_markdown_note", arguments: { query: "needle" } }, MCP_AUTH_HDR),
     );
     assertEquals(searchRes.status, 200);
     const searchBody = await searchRes.json();
     const searchText: string = searchBody.result.content[0].text;
     assertEquals(searchText.includes(uniqueTitle), true);
     assertEquals(searchText.includes("ID:"), false);
+
+    // Multi-word FTS: words appear in the note but not as a consecutive substring
+    const ftsRes = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", { name: "search_markdown_note", arguments: { query: "needle Beta" } }, MCP_AUTH_HDR),
+    );
+    assertEquals(ftsRes.status, 200);
+    const ftsBody = await ftsRes.json();
+    assertEquals((ftsBody.result.content[0].text as string).includes(uniqueTitle), true);
 
     // Read by exact title returns full content
     const readRes = await fetch(
