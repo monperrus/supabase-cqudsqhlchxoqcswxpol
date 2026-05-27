@@ -95,22 +95,22 @@ jobs:
             -H "apikey: ${SRK}" -H "Authorization: Bearer ${SRK}" \
             -H "Content-Type: application/json" \
             -d '{"email":"ci-integration@test.invalid","email_confirm":true,"password":"ci_integration_2026!"}')
-          UID=$(echo "${RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          TEST_UID=$(echo "${RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
 
-          if [ -z "${UID}" ]; then
+          if [ -z "${TEST_UID}" ]; then
             # User already existed — look up by listing and filtering.
-            UID=$(curl -sf \
+            TEST_UID=$(curl -sf \
               "https://${SUPABASE_PROJECT_REF}.supabase.co/auth/v1/admin/users" \
               -H "apikey: ${SRK}" -H "Authorization: Bearer ${SRK}" \
               | python3 -c "import sys, json; users = json.load(sys.stdin).get('users', []); match = [u['id'] for u in users if u.get('email') == 'ci-integration@test.invalid']; print(match[0] if match else '')" 2>/dev/null || true)
           fi
 
-          if [ -n "${UID}" ]; then
-            echo "Test user UUID: ${UID}"
+          if [ -n "${TEST_UID}" ]; then
+            echo "Test user UUID: ${TEST_UID}"
             # Expose to Supabase function as TEST_USER_ID so MCP server uses
             # the same real user for DB writes.
-            supabase secrets set --project-ref "${SUPABASE_PROJECT_REF}" TEST_USER_ID="${UID}"
-            export SUPABASE_TEST_USER_ID="${UID}"
+            supabase secrets set --project-ref "${SUPABASE_PROJECT_REF}" TEST_USER_ID="${TEST_UID}"
+            export SUPABASE_TEST_USER_ID="${TEST_UID}"
 
             TOKEN_RESP=$(curl -s -X POST \
               "https://${SUPABASE_PROJECT_REF}.supabase.co/auth/v1/token?grant_type=password" \
