@@ -475,9 +475,9 @@ async function handleMCP(req: Request): Promise<Response> {
       case "tools/call":
         resp = await callTool(mcp, auth.user, reqId);
         break;
-      case "add_markdown_doc":
-      case "update_markdown_doc":
-      case "search_markdown_doc":
+      case "save_markdown_note":
+      case "search_markdown_note":
+      case "read_markdown_note":
       case "whoami":
         resp = await callNamedTool(mcp.method, mcp.params ?? {}, auth.user, reqId);
         break;
@@ -534,40 +534,36 @@ async function callNamedTool(
           text: `Connected as ${user.username} via ${user.oauthOrigin}.`,
         }],
       });
-    case "add_markdown_doc": {
+    case "save_markdown_note": {
       const title = requiredString(args, "title");
       const content = requiredString(args, "content");
       if (!title) return mcpErr(reqId, -32602, "title is required");
       if (!content) return mcpErr(reqId, -32602, "content is required");
 
-      const { data, error } = await db.from("markdown_documents")
-        .insert({ title, content, user_id: user.id })
-        .select("id, title")
-        .single();
-      if (error) throw new Error(error.message);
-      return mcpOk(reqId, { content: [{ type: "text", text: `Added document "${data.title}" (ID: ${data.id})` }] });
-    }
-    case "update_markdown_doc": {
       const id = args.id;
-      if (typeof id !== "number" && typeof id !== "string") return mcpErr(reqId, -32602, "id is required");
+      if (id !== undefined && id !== null && typeof id !== "number" && typeof id !== "string") {
+        return mcpErr(reqId, -32602, "id must be a number or string");
+      }
 
-      const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
-      const title = requiredString(args, "title");
-      const content = requiredString(args, "content");
-      if (title) update.title = title;
-      if (content) update.content = content;
-      if (!title && !content) return mcpErr(reqId, -32602, "title or content is required");
-
-      const { data, error } = await db.from("markdown_documents")
-        .update(update)
-        .eq("id", id)
-        .eq("user_id", user.id)
-        .select("id, title")
-        .single();
-      if (error) throw new Error(error.message);
-      return mcpOk(reqId, { content: [{ type: "text", text: `Updated document "${data.title}" (ID: ${data.id})` }] });
+      if (id !== undefined && id !== null) {
+        const { data, error } = await db.from("markdown_documents")
+          .update({ title, content, updated_at: new Date().toISOString() })
+          .eq("id", id)
+          .eq("user_id", user.id)
+          .select("id, title")
+          .single();
+        if (error) throw new Error(error.message);
+        return mcpOk(reqId, { content: [{ type: "text", text: `Updated note "${data.title}" (ID: ${data.id})` }] });
+      } else {
+        const { data, error } = await db.from("markdown_documents")
+          .insert({ title, content, user_id: user.id })
+          .select("id, title")
+          .single();
+        if (error) throw new Error(error.message);
+        return mcpOk(reqId, { content: [{ type: "text", text: `Added note "${data.title}" (ID: ${data.id})` }] });
+      }
     }
-    case "search_markdown_doc": {
+    case "search_markdown_note": {
       const query = requiredString(args, "query");
       if (!query) return mcpErr(reqId, -32602, "query is required");
 
@@ -588,18 +584,37 @@ async function callNamedTool(
       if (contentResult.error) throw new Error(contentResult.error.message);
 
       const byId = new Map<number, { id: number; title: string; content: string; updated_at: string }>();
-      for (const doc of titleResult.data ?? []) byId.set(doc.id, doc);
-      for (const doc of contentResult.data ?? []) byId.set(doc.id, doc);
+      for (const note of titleResult.data ?? []) byId.set(note.id, note);
+      for (const note of contentResult.data ?? []) byId.set(note.id, note);
       const data = [...byId.values()]
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
         .slice(0, 10);
 
-      if (!data.length) return mcpOk(reqId, { content: [{ type: "text", text: "No matching documents found." }] });
+      if (!data.length) return mcpOk(reqId, { content: [{ type: "text", text: "No matching notes found." }] });
 
-      const text = data.map((doc: { id: number; title: string; content: string }) => {
-        const snippet = doc.content.replace(/\s+/g, " ").slice(0, 180);
-        return `- ${doc.title} (ID: ${doc.id}): ${snippet}`;
+      const text = data.map((note: { id: number; title: string; content: string }) => {
+        const snippet = note.content.replace(/\s+/g, " ").slice(0, 180);
+        return `- title: "${note.title}" (ID: ${note.id})\n  snippet: ${snippet}`;
       }).join("\n");
+      return mcpOk(reqId, { content: [{ type: "text", text }] });
+    }
+    case "read_markdown_note": {
+      const title = requiredString(args, "title");
+      if (!title) return mcpErr(reqId, -32602, "title is required");
+
+      const { data, error } = await db.from("markdown_documents")
+        .select("id, title, content, updated_at")
+        .eq("user_id", user.id)
+        .ilike("title", title)
+        .order("updated_at", { ascending: false })
+        .limit(5);
+      if (error) throw new Error(error.message);
+      if (!data || data.length === 0) {
+        return mcpOk(reqId, { content: [{ type: "text", text: `No note found with title "${title}".` }] });
+      }
+      const text = data.map((note: { id: number; title: string; content: string }) =>
+        `# ${note.title} (ID: ${note.id})\n\n${note.content}`
+      ).join("\n\n---\n\n");
       return mcpOk(reqId, { content: [{ type: "text", text }] });
     }
     default:
@@ -609,39 +624,38 @@ async function callNamedTool(
 
 const TOOLS = [
   {
-    name: "add_markdown_doc",
-    description: "Add a Markdown document",
+    name: "save_markdown_note",
+    description: "Add or update a Markdown note. Omit id to create a new note; provide id to update an existing one.",
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string" },
-        content: { type: "string" },
+        title: { type: "string", description: "Title of the note" },
+        content: { type: "string", description: "Full Markdown content of the note" },
+        id: { type: ["integer", "string"], description: "Note ID to update (omit to create a new note)" },
       },
       required: ["title", "content"],
     },
   },
   {
-    name: "update_markdown_doc",
-    description: "Update a Markdown document",
+    name: "search_markdown_note",
+    description: "Search Markdown notes by title or content. Returns matching note titles and snippets.",
     inputSchema: {
       type: "object",
       properties: {
-        id: { type: ["integer", "string"] },
-        title: { type: "string" },
-        content: { type: "string" },
+        query: { type: "string", description: "Search query matched against title and content" },
       },
-      required: ["id"],
+      required: ["query"],
     },
   },
   {
-    name: "search_markdown_doc",
-    description: "Search Markdown documents",
+    name: "read_markdown_note",
+    description: "Read the full content of a Markdown note by its exact title.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string" },
+        title: { type: "string", description: "Exact title of the note to read" },
       },
-      required: ["query"],
+      required: ["title"],
     },
   },
   {

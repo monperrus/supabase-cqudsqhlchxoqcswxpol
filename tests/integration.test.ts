@@ -397,14 +397,14 @@ Deno.test("documents-mcp-server: accepts chatgpt.com OAuth redirect registration
 });
 
 Deno.test({
-  name: "documents-mcp-server: tools/list returns document tools",
+  name: "documents-mcp-server: tools/list returns note tools",
   ignore: !HAS_MCP_AUTH,
   fn: async () => {
     const res = await fetch(DOCS_MCP, mcpBody("tools/list", undefined, MCP_AUTH_HDR));
     assertEquals(res.status, 200);
     const body = await res.json();
     const names: string[] = body.result.tools.map((t: { name: string }) => t.name).sort();
-    assertEquals(names, ["add_markdown_doc", "search_markdown_doc", "update_markdown_doc", "whoami"]);
+    assertEquals(names, ["read_markdown_note", "save_markdown_note", "search_markdown_note", "whoami"]);
   },
 });
 
@@ -422,39 +422,170 @@ Deno.test({
 });
 
 Deno.test({
-  name: "documents-mcp-server: add update search markdown doc",
+  name: "documents-mcp-server: save_markdown_note without title returns -32602",
   ignore: !HAS_MCP_AUTH,
   fn: async () => {
-    const addRes = await fetch(
+    const res = await fetch(
       DOCS_MCP,
-      mcpBody(
-        "add_markdown_doc",
-        { title: "Integration Markdown", content: "# Alpha\n\nBody" },
-        MCP_AUTH_HDR,
-      ),
+      mcpBody("tools/call", { name: "save_markdown_note", arguments: { content: "no title" } }, MCP_AUTH_HDR),
     );
-    assertEquals(addRes.status, 200);
-    const addBody = await addRes.json();
-    const match = (addBody.result.content[0].text as string).match(/\(ID: (\d+)\)/);
-    assertExists(match);
-    const id = match[1];
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32602);
+  },
+});
 
+Deno.test({
+  name: "documents-mcp-server: save_markdown_note without content returns -32602",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", { name: "save_markdown_note", arguments: { title: "no content" } }, MCP_AUTH_HDR),
+    );
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32602);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: search_markdown_note without query returns -32602",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", { name: "search_markdown_note", arguments: {} }, MCP_AUTH_HDR),
+    );
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32602);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: read_markdown_note without title returns -32602",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", { name: "read_markdown_note", arguments: {} }, MCP_AUTH_HDR),
+    );
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32602);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: save (create) → save (update) → search → read round-trip",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const uniqueTitle = `Integration Note ${Date.now()}`;
+
+    // Create via save_markdown_note (no id)
+    const createRes = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", {
+        name: "save_markdown_note",
+        arguments: { title: uniqueTitle, content: "# Alpha\n\nInitial body" },
+      }, MCP_AUTH_HDR),
+    );
+    assertEquals(createRes.status, 200);
+    const createBody = await createRes.json();
+    const createText: string = createBody.result.content[0].text;
+    assertEquals(createText.includes("Added note"), true);
+    const idMatch = createText.match(/\(ID: (\d+)\)/);
+    assertExists(idMatch, `Expected ID in response: "${createText}"`);
+    const id = idMatch[1];
+
+    // Update via save_markdown_note (with id)
     const updateRes = await fetch(
       DOCS_MCP,
-      mcpBody(
-        "update_markdown_doc",
-        { id, content: "# Beta\n\nSearch needle" },
-        MCP_AUTH_HDR,
-      ),
+      mcpBody("tools/call", {
+        name: "save_markdown_note",
+        arguments: { id, title: uniqueTitle, content: "# Beta\n\nSearch needle xyz" },
+      }, MCP_AUTH_HDR),
     );
     assertEquals(updateRes.status, 200);
+    const updateBody = await updateRes.json();
+    const updateText: string = updateBody.result.content[0].text;
+    assertEquals(updateText.includes("Updated note"), true);
+    assertEquals(updateText.includes(`ID: ${id}`), true);
 
+    // Search finds the note and exposes the title
     const searchRes = await fetch(
       DOCS_MCP,
-      mcpBody("search_markdown_doc", { query: "needle" }, MCP_AUTH_HDR),
+      mcpBody("tools/call", { name: "search_markdown_note", arguments: { query: "needle xyz" } }, MCP_AUTH_HDR),
     );
     assertEquals(searchRes.status, 200);
     const searchBody = await searchRes.json();
-    assertEquals((searchBody.result.content[0].text as string).includes(`ID: ${id}`), true);
+    const searchText: string = searchBody.result.content[0].text;
+    assertEquals(searchText.includes(`ID: ${id}`), true);
+    assertEquals(searchText.includes(`title: "${uniqueTitle}"`), true);
+
+    // Read by exact title returns full content
+    const readRes = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", { name: "read_markdown_note", arguments: { title: uniqueTitle } }, MCP_AUTH_HDR),
+    );
+    assertEquals(readRes.status, 200);
+    const readBody = await readRes.json();
+    const readText: string = readBody.result.content[0].text;
+    assertEquals(readText.includes("# Beta"), true);
+    assertEquals(readText.includes("Search needle xyz"), true);
+    assertEquals(readText.includes(uniqueTitle), true);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: read_markdown_note for nonexistent title returns not-found message",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", {
+        name: "read_markdown_note",
+        arguments: { title: "This Title Does Not Exist XYZ999" },
+      }, MCP_AUTH_HDR),
+    );
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    const text: string = body.result.content[0].text;
+    assertEquals(text.includes("No note found"), true);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: search_markdown_note for missing query returns no-match message",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(
+      DOCS_MCP,
+      mcpBody("tools/call", {
+        name: "search_markdown_note",
+        arguments: { query: "zzz_no_such_note_xyz_999" },
+      }, MCP_AUTH_HDR),
+    );
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    const text: string = body.result.content[0].text;
+    assertEquals(text.includes("No matching notes found"), true);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: unknown method returns JSON-RPC error -32601",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(DOCS_MCP, mcpBody("unknown/method", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertExists(body.error);
+    assertEquals(body.error.code, -32601);
   },
 });
