@@ -260,14 +260,40 @@ Deno.test({
 });
 
 Deno.test({
-  name: "todo-mcp-server: tools/list returns the 4 expected tools",
+  name: "todo-mcp-server: tools/list returns the 5 expected tools",
   ignore: !HAS_MCP_AUTH,
   fn: async () => {
     const res = await fetch(MCP, mcpBody("tools/list", undefined, MCP_AUTH_HDR));
     assertEquals(res.status, 200);
     const body = await res.json();
     const names: string[] = body.result.tools.map((t: { name: string }) => t.name).sort();
-    assertEquals(names, ["create_todo", "delete_todo", "list_todos", "update_todo"]);
+    assertEquals(names, ["create_todo", "delete_todo", "list_todos", "update_todo", "whoami"]);
+  },
+});
+
+Deno.test({
+  name: "todo-mcp-server: user/info returns OAuth user details",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("user/info", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(typeof body.result.user.id, "string");
+    assertEquals(typeof body.result.user.username, "string");
+    assertEquals(typeof body.result.user.oauth_origin, "string");
+  },
+});
+
+Deno.test({
+  name: "todo-mcp-server: whoami returns connected OAuth user text",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(MCP, mcpBody("tools/call", { name: "whoami", arguments: {} }, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    const text = body.result.content[0].text as string;
+    assertEquals(text.includes("Connected as "), true);
+    assertEquals(text.includes(" via "), true);
   },
 });
 

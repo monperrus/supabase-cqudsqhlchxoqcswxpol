@@ -688,7 +688,8 @@ const mcpErr = (id: string | number, code: number, message: string): MCPResp => 
   jsonrpc: "2.0", id, error: { code, message },
 });
 
-type OAuthUserResult = { ok: true; userId: string } | { ok: false; message: string };
+type OAuthUser = { id: string; username: string; oauthOrigin: string };
+type OAuthUserResult = { ok: true; user: OAuthUser } | { ok: false; message: string };
 
 function quoteHeaderValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -713,7 +714,14 @@ async function getOAuthUser(req: Request): Promise<OAuthUserResult> {
 
   const localPayload = await verifyLocalJwt(token);
   if (typeof localPayload?.sub === "string") {
-    return { ok: true, userId: localPayload.sub };
+    return {
+      ok: true,
+      user: {
+        id: localPayload.sub,
+        username: stringFrom(localPayload, "username") ?? localPayload.sub,
+        oauthOrigin: stringFrom(localPayload, "oauth_origin") ?? "device_flow",
+      },
+    };
   }
 
   try {
@@ -724,13 +732,70 @@ async function getOAuthUser(req: Request): Promise<OAuthUserResult> {
     );
     const { data, error } = await supabase.auth.getUser(token);
     if (!error && data.user) {
-      return { ok: true, userId: data.user.id };
+      return { ok: true, user: oauthUserFromSupabaseUser(data.user as unknown as Record<string, unknown>) };
     }
   } catch {
     // Treat auth service failures the same as invalid bearer tokens.
   }
 
   return { ok: false, message: "Invalid or expired OAuth bearer token" };
+}
+
+function recordFrom(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringFrom(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function firstStringFrom(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = stringFrom(record, key);
+    if (value) return value;
+  }
+  return null;
+}
+
+function oauthOriginFromSupabaseUser(user: Record<string, unknown>): string {
+  const appMetadata = recordFrom(user.app_metadata);
+  const provider = stringFrom(appMetadata, "provider");
+  if (provider) return provider;
+
+  const providers = appMetadata.providers;
+  if (Array.isArray(providers)) {
+    const firstProvider = providers.find((value) => typeof value === "string" && value.trim());
+    if (typeof firstProvider === "string") return firstProvider.trim();
+  }
+
+  const identities = user.identities;
+  if (Array.isArray(identities)) {
+    for (const identity of identities) {
+      const identityProvider = stringFrom(recordFrom(identity), "provider");
+      if (identityProvider) return identityProvider;
+    }
+  }
+
+  return "unknown";
+}
+
+function oauthUserFromSupabaseUser(user: Record<string, unknown>): OAuthUser {
+  const metadata = recordFrom(user.user_metadata);
+  const email = stringFrom(user, "email");
+  const username = firstStringFrom(metadata, [
+    "user_name",
+    "preferred_username",
+    "username",
+    "name",
+    "full_name",
+  ]) ?? email ?? stringFrom(user, "id") ?? "unknown";
+
+  return {
+    id: stringFrom(user, "id") ?? "unknown",
+    username,
+    oauthOrigin: oauthOriginFromSupabaseUser(user),
+  };
 }
 
 async function handleMCP(req: Request): Promise<Response> {
@@ -748,7 +813,7 @@ async function handleMCP(req: Request): Promise<Response> {
   if (mcp.jsonrpc !== "2.0" || !mcp.method) return jsonResp({ error: "Invalid JSON-RPC" }, 400);
 
   const reqId = mcp.id ?? Date.now();
-  const userId = auth.userId;
+  const user = auth.user;
 
   let resp: MCPResp;
   try {
@@ -763,8 +828,17 @@ async function handleMCP(req: Request): Promise<Response> {
       case "tools/list":
         resp = mcpOk(reqId, { tools: TOOLS });
         break;
+      case "user/info":
+        resp = mcpOk(reqId, {
+          user: {
+            id: user.id,
+            username: user.username,
+            oauth_origin: user.oauthOrigin,
+          },
+        });
+        break;
       case "tools/call":
-        resp = await callTool(mcp, userId, reqId);
+        resp = await callTool(mcp, user, reqId);
         break;
       default:
         resp = mcpErr(reqId, -32601, `Unknown method: ${mcp.method}`);
@@ -785,11 +859,19 @@ function serviceClient() {
   );
 }
 
-async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Promise<MCPResp> {
+async function callTool(mcp: MCPReq, user: OAuthUser, reqId: string | number): Promise<MCPResp> {
   const { name, arguments: args = {} } = mcp.params as { name: string; arguments?: Record<string, unknown> };
   const db = serviceClient();
+  const userId = user.id;
 
   switch (name) {
+    case "whoami":
+      return mcpOk(reqId, {
+        content: [{
+          type: "text",
+          text: `Connected as ${user.username} via ${user.oauthOrigin}.`,
+        }],
+      });
     case "list_todos": {
       const { data, error } = await db.from("todos")
         .select("id, title, completed, created_at")
@@ -835,6 +917,11 @@ async function callTool(mcp: MCPReq, userId: string, reqId: string | number): Pr
 }
 
 const TOOLS = [
+  {
+    name: "whoami",
+    description: "Show the connected OAuth user",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
   {
     name: "list_todos",
     description: "List all todos",

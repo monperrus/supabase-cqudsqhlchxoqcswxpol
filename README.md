@@ -91,10 +91,13 @@ curl -X POST https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-serv
 
 Once authenticated, the server provides these tools:
 
+- **whoami** — Show the connected OAuth username and OAuth origin/provider
 - **list_todos** — List all todos for the authenticated user
 - **create_todo** — Create a new todo (requires `title`)
 - **update_todo** — Update a todo by ID (can update `title` and/or `completed`)
 - **delete_todo** — Delete a todo by ID
+
+It also supports the `user/info` JSON-RPC method, which returns the connected user's `id`, `username`, and `oauth_origin`.
 
 ### Required Secrets
 
