@@ -46,8 +46,9 @@ jobs:
           supabase migration repair --status applied  20260418193000 20260418193500 20260505234000
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Add MCP callbacks to Supabase auth redirect allowlist
+      - name: Configure Supabase auth URLs
         run: |
+          SITE_URL="https://${SUPABASE_PROJECT_REF}.supabase.co"
           CALLBACK_URLS="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/todo-mcp-server/callback https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/documents-mcp-server/callback"
           CURRENT=$(curl -sf \
             -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
@@ -66,11 +67,18 @@ jobs:
           done
 
           if [ "$CHANGED" = "1" ]; then
-            curl -sf -X PATCH \
-              -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{\"additional_redirect_urls\": \"${NEW}\"}" \
-              "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/config/auth"
+            echo "Updating Supabase auth redirect allowlist"
+          fi
+
+          SITE_URL="${SITE_URL}" NEW="${NEW}" python3 -c 'import json, os; print(json.dumps({"site_url": os.environ["SITE_URL"], "additional_redirect_urls": os.environ["NEW"]}))' > /tmp/auth-config.json
+
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/auth-config.json \
+            "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/config/auth"
+          echo "Set Supabase auth Site URL to ${SITE_URL}"
+          if [ "$CHANGED" = "1" ]; then
             echo "Updated Supabase auth redirect allowlist"
           fi
 
