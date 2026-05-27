@@ -487,7 +487,7 @@ Deno.test({
   fn: async () => {
     const uniqueTitle = `Integration Note ${Date.now()}`;
 
-    // Create via save_markdown_note (no id)
+    // Create via save_markdown_note (title not yet known → insert)
     const createRes = await fetch(
       DOCS_MCP,
       mcpBody("tools/call", {
@@ -499,25 +499,23 @@ Deno.test({
     const createBody = await createRes.json();
     const createText: string = createBody.result.content[0].text;
     assertEquals(createText.includes("Added note"), true);
-    const idMatch = createText.match(/\(ID: (\d+)\)/);
-    assertExists(idMatch, `Expected ID in response: "${createText}"`);
-    const id = idMatch[1];
+    assertEquals(createText.includes(uniqueTitle), true);
 
-    // Update via save_markdown_note (with id)
+    // Update via save_markdown_note (same title → update)
     const updateRes = await fetch(
       DOCS_MCP,
       mcpBody("tools/call", {
         name: "save_markdown_note",
-        arguments: { id, title: uniqueTitle, content: "# Beta\n\nSearch needle xyz" },
+        arguments: { title: uniqueTitle, content: "# Beta\n\nSearch needle xyz" },
       }, MCP_AUTH_HDR),
     );
     assertEquals(updateRes.status, 200);
     const updateBody = await updateRes.json();
     const updateText: string = updateBody.result.content[0].text;
     assertEquals(updateText.includes("Updated note"), true);
-    assertEquals(updateText.includes(`ID: ${id}`), true);
+    assertEquals(updateText.includes(uniqueTitle), true);
 
-    // Search finds the note and exposes the title
+    // Search finds the note and exposes the title (no ID in output)
     const searchRes = await fetch(
       DOCS_MCP,
       mcpBody("tools/call", { name: "search_markdown_note", arguments: { query: "needle xyz" } }, MCP_AUTH_HDR),
@@ -525,8 +523,8 @@ Deno.test({
     assertEquals(searchRes.status, 200);
     const searchBody = await searchRes.json();
     const searchText: string = searchBody.result.content[0].text;
-    assertEquals(searchText.includes(`ID: ${id}`), true);
-    assertEquals(searchText.includes(`title: "${uniqueTitle}"`), true);
+    assertEquals(searchText.includes(uniqueTitle), true);
+    assertEquals(searchText.includes("ID:"), false);
 
     // Read by exact title returns full content
     const readRes = await fetch(
@@ -539,6 +537,7 @@ Deno.test({
     assertEquals(readText.includes("# Beta"), true);
     assertEquals(readText.includes("Search needle xyz"), true);
     assertEquals(readText.includes(uniqueTitle), true);
+    assertEquals(readText.includes("ID:"), false);
   },
 });
 

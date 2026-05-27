@@ -540,27 +540,24 @@ async function callNamedTool(
       if (!title) return mcpErr(reqId, -32602, "title is required");
       if (!content) return mcpErr(reqId, -32602, "content is required");
 
-      const id = args.id;
-      if (id !== undefined && id !== null && typeof id !== "number" && typeof id !== "string") {
-        return mcpErr(reqId, -32602, "id must be a number or string");
-      }
+      const { data: existing } = await db.from("markdown_documents")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("title", title)
+        .maybeSingle();
 
-      if (id !== undefined && id !== null) {
-        const { data, error } = await db.from("markdown_documents")
-          .update({ title, content, updated_at: new Date().toISOString() })
-          .eq("id", id)
-          .eq("user_id", user.id)
-          .select("id, title")
-          .single();
+      if (existing) {
+        const { error } = await db.from("markdown_documents")
+          .update({ content, updated_at: new Date().toISOString() })
+          .eq("id", existing.id)
+          .eq("user_id", user.id);
         if (error) throw new Error(error.message);
-        return mcpOk(reqId, { content: [{ type: "text", text: `Updated note "${data.title}" (ID: ${data.id})` }] });
+        return mcpOk(reqId, { content: [{ type: "text", text: `Updated note "${title}".` }] });
       } else {
-        const { data, error } = await db.from("markdown_documents")
-          .insert({ title, content, user_id: user.id })
-          .select("id, title")
-          .single();
+        const { error } = await db.from("markdown_documents")
+          .insert({ title, content, user_id: user.id });
         if (error) throw new Error(error.message);
-        return mcpOk(reqId, { content: [{ type: "text", text: `Added note "${data.title}" (ID: ${data.id})` }] });
+        return mcpOk(reqId, { content: [{ type: "text", text: `Added note "${title}".` }] });
       }
     }
     case "search_markdown_note": {
@@ -583,18 +580,18 @@ async function callNamedTool(
         .limit(10);
       if (contentResult.error) throw new Error(contentResult.error.message);
 
-      const byId = new Map<number, { id: number; title: string; content: string; updated_at: string }>();
-      for (const note of titleResult.data ?? []) byId.set(note.id, note);
-      for (const note of contentResult.data ?? []) byId.set(note.id, note);
-      const data = [...byId.values()]
+      const byTitle = new Map<string, { id: number; title: string; content: string; updated_at: string }>();
+      for (const note of titleResult.data ?? []) byTitle.set(note.title, note);
+      for (const note of contentResult.data ?? []) byTitle.set(note.title, note);
+      const data = [...byTitle.values()]
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
         .slice(0, 10);
 
       if (!data.length) return mcpOk(reqId, { content: [{ type: "text", text: "No matching notes found." }] });
 
-      const text = data.map((note: { id: number; title: string; content: string }) => {
+      const text = data.map((note: { title: string; content: string }) => {
         const snippet = note.content.replace(/\s+/g, " ").slice(0, 180);
-        return `- title: "${note.title}" (ID: ${note.id})\n  snippet: ${snippet}`;
+        return `- "${note.title}"\n  snippet: ${snippet}`;
       }).join("\n");
       return mcpOk(reqId, { content: [{ type: "text", text }] });
     }
@@ -612,8 +609,8 @@ async function callNamedTool(
       if (!data || data.length === 0) {
         return mcpOk(reqId, { content: [{ type: "text", text: `No note found with title "${title}".` }] });
       }
-      const text = data.map((note: { id: number; title: string; content: string }) =>
-        `# ${note.title} (ID: ${note.id})\n\n${note.content}`
+      const text = data.map((note: { title: string; content: string }) =>
+        `# ${note.title}\n\n${note.content}`
       ).join("\n\n---\n\n");
       return mcpOk(reqId, { content: [{ type: "text", text }] });
     }
@@ -625,13 +622,12 @@ async function callNamedTool(
 const TOOLS = [
   {
     name: "save_markdown_note",
-    description: "Add or update a Markdown note. Omit id to create a new note; provide id to update an existing one.",
+    description: "Add or update a Markdown note by title. Creates a new note if the title doesn't exist; updates the existing one otherwise.",
     inputSchema: {
       type: "object",
       properties: {
         title: { type: "string", description: "Title of the note" },
         content: { type: "string", description: "Full Markdown content of the note" },
-        id: { type: ["integer", "string"], description: "Note ID to update (omit to create a new note)" },
       },
       required: ["title", "content"],
     },
