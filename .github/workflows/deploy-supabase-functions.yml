@@ -103,19 +103,28 @@ jobs:
 
       - name: Add MCP callback to Supabase auth redirect allowlist
         run: |
-          CALLBACK_URL="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/todo-mcp-server/callback"
+          CALLBACK_URLS="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/todo-mcp-server/callback https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/documents-mcp-server/callback"
           CURRENT=$(curl -sf \
             -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
             "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/config/auth" \
             | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('additional_redirect_urls',''))" 2>/dev/null || echo "")
-          if echo "$CURRENT" | grep -qF "$CALLBACK_URL"; then
-            echo "Callback URL already in allowlist"
-          else
-            NEW="${CURRENT:+${CURRENT},}${CALLBACK_URL}"
+
+          NEW="$CURRENT"
+          CHANGED=0
+          for CALLBACK_URL in $CALLBACK_URLS; do
+            if echo "$NEW" | grep -qF "$CALLBACK_URL"; then
+              echo "Callback URL already in allowlist: ${CALLBACK_URL}"
+            else
+              NEW="${NEW:+${NEW},}${CALLBACK_URL}"
+              CHANGED=1
+            fi
+          done
+
+          if [ "$CHANGED" = "1" ]; then
             curl -sf -X PATCH \
               -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
               -H "Content-Type: application/json" \
               -d "{\"additional_redirect_urls\": \"${NEW}\"}" \
               "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/config/auth"
-            echo "Added ${CALLBACK_URL} to Supabase auth redirect allowlist"
+            echo "Updated Supabase auth redirect allowlist"
           fi

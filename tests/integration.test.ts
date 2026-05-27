@@ -360,3 +360,79 @@ Deno.test({
     assertEquals(body.error.code, -32602);
   },
 });
+
+// ---------------------------------------------------------------------------
+// documents-mcp-server (MCP JSON-RPC)
+// ---------------------------------------------------------------------------
+
+const DOCS_MCP = `${BASE}/documents-mcp-server`;
+
+Deno.test("documents-mcp-server: no auth returns 401", async () => {
+  const res = await fetch(DOCS_MCP, mcpBody("initialize"));
+  assertEquals(res.status, 401);
+  assertEquals(res.headers.get("www-authenticate")?.includes("resource_metadata"), true);
+  await res.body?.cancel();
+});
+
+Deno.test({
+  name: "documents-mcp-server: tools/list returns document tools",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(DOCS_MCP, mcpBody("tools/list", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    const names: string[] = body.result.tools.map((t: { name: string }) => t.name).sort();
+    assertEquals(names, ["add_markdown_doc", "search_markdown_doc", "update_markdown_doc", "whoami"]);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: whoami returns connected OAuth user text",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const res = await fetch(DOCS_MCP, mcpBody("whoami", undefined, MCP_AUTH_HDR));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    const text = body.result.content[0].text as string;
+    assertEquals(text.includes("Connected as "), true);
+    assertEquals(text.includes(" via "), true);
+  },
+});
+
+Deno.test({
+  name: "documents-mcp-server: add update search markdown doc",
+  ignore: !HAS_MCP_AUTH,
+  fn: async () => {
+    const addRes = await fetch(
+      DOCS_MCP,
+      mcpBody(
+        "add_markdown_doc",
+        { title: "Integration Markdown", content: "# Alpha\n\nBody" },
+        MCP_AUTH_HDR,
+      ),
+    );
+    assertEquals(addRes.status, 200);
+    const addBody = await addRes.json();
+    const match = (addBody.result.content[0].text as string).match(/\(ID: (\d+)\)/);
+    assertExists(match);
+    const id = match[1];
+
+    const updateRes = await fetch(
+      DOCS_MCP,
+      mcpBody(
+        "update_markdown_doc",
+        { id, content: "# Beta\n\nSearch needle" },
+        MCP_AUTH_HDR,
+      ),
+    );
+    assertEquals(updateRes.status, 200);
+
+    const searchRes = await fetch(
+      DOCS_MCP,
+      mcpBody("search_markdown_doc", { query: "needle" }, MCP_AUTH_HDR),
+    );
+    assertEquals(searchRes.status, 200);
+    const searchBody = await searchRes.json();
+    assertEquals((searchBody.result.content[0].text as string).includes(`ID: ${id}`), true);
+  },
+});

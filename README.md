@@ -89,7 +89,7 @@ curl -X POST https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/todo-mcp-serv
 
 #### MCP Tools
 
-Once authenticated, the server provides these tools:
+Once authenticated, the server provides these MCP tools:
 
 - **whoami** — Show the connected OAuth username and OAuth origin/provider
 - **list_todos** — List all todos for the authenticated user
@@ -98,6 +98,23 @@ Once authenticated, the server provides these tools:
 - **delete_todo** — Delete a todo by ID
 
 It also supports the `user/info` JSON-RPC method, which returns the connected user's `id`, `username`, and `oauth_origin`.
+
+### documents-mcp-server
+
+The `documents-mcp-server` is a separate OAuth-protected MCP server for per-user Markdown documents.
+
+Endpoint:
+
+```bash
+https://cqudsqhlchxoqcswxpol.supabase.co/functions/v1/documents-mcp-server
+```
+
+Once authenticated, the server provides these JSON-RPC methods and matching MCP tools:
+
+- **add_markdown_doc** — Add a Markdown document with `title` and `content`
+- **update_markdown_doc** — Update an existing Markdown document by `id`, changing `title` and/or `content`
+- **search_markdown_doc** — Search the authenticated user's Markdown documents with `query`
+- **whoami** — Show the connected OAuth username and OAuth origin/provider
 
 ### Required Secrets
 
