@@ -374,6 +374,16 @@ Deno.test("documents-mcp-server: no auth returns 401", async () => {
   await res.body?.cancel();
 });
 
+Deno.test("documents-mcp-server: rejects github.io OAuth redirect registration", async () => {
+  const res = await fetch(`${DOCS_MCP}/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ redirect_uris: ["https://example.github.io/callback"] }),
+  });
+  assertEquals(res.status, 400);
+  await res.body?.cancel();
+});
+
 Deno.test({
   name: "documents-mcp-server: tools/list returns document tools",
   ignore: !HAS_MCP_AUTH,

@@ -131,6 +131,21 @@ function handleOidcMetadata(req: Request) {
   });
 }
 
+function isAllowedClientRedirectUri(redirectUri: string): boolean {
+  try {
+    const url = new URL(redirectUri);
+    if (url.protocol === "https:" && url.hostname === "claude.ai") {
+      return true;
+    }
+    if (url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1")) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function handleRegister(req: Request) {
   let meta: Record<string, unknown> = {};
   try {
@@ -138,10 +153,21 @@ async function handleRegister(req: Request) {
   } catch {
     // Empty dynamic client registration body is acceptable.
   }
+  const redirectUris = Array.isArray(meta.redirect_uris)
+    ? meta.redirect_uris.filter((value): value is string => typeof value === "string" && isAllowedClientRedirectUri(value))
+    : [];
+
+  if (Array.isArray(meta.redirect_uris) && redirectUris.length === 0) {
+    return jsonResp({
+      error: "invalid_redirect_uri",
+      error_description: "Only Claude.ai and loopback OAuth redirect URIs are allowed",
+    }, 400);
+  }
+
   return jsonResp({
     client_id: randomB64url(16),
     client_secret_expires_at: 0,
-    redirect_uris: meta.redirect_uris ?? [],
+    redirect_uris: redirectUris,
     grant_types: ["authorization_code"],
     response_types: ["code"],
     token_endpoint_auth_method: "none",
@@ -158,6 +184,12 @@ async function handleAuthorize(req: Request): Promise<Response> {
 
   if (!codeChallenge || !redirectUri || p.get("response_type") !== "code") {
     return jsonResp({ error: "invalid_request", error_description: "Missing required params" }, 400);
+  }
+  if (!isAllowedClientRedirectUri(redirectUri)) {
+    return jsonResp({
+      error: "invalid_request",
+      error_description: "redirect_uri must be a Claude.ai or loopback OAuth callback",
+    }, 400);
   }
   if (codeChallengeMethod !== "S256") {
     return jsonResp({ error: "invalid_request", error_description: "Only S256 supported" }, 400);
