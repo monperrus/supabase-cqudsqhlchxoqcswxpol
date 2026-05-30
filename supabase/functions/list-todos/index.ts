@@ -86,7 +86,7 @@ Deno.serve(async (req: Request) => {
 
   const { data, error } = await supabase
     .from("todos")
-    .select("id, title, completed, created_at")
+    .select("id, title, completed, created_at, updated_at")
     .eq("user_id", userId)
     .order("id", { ascending: true });
 

@@ -874,7 +874,7 @@ async function callTool(mcp: MCPReq, user: OAuthUser, reqId: string | number): P
       });
     case "list_todos": {
       const { data, error } = await db.from("todos")
-        .select("id, title, completed, created_at")
+        .select("id, title, completed, created_at, updated_at")
         .eq("user_id", userId)
         .order("created_at", { ascending: false });
       if (error) throw new Error(error.message);
@@ -887,7 +887,7 @@ async function callTool(mcp: MCPReq, user: OAuthUser, reqId: string | number): P
       const title = (args.title as string)?.trim();
       if (!title) return mcpErr(reqId, -32602, "title is required");
       const { data, error } = await db.from("todos")
-        .insert({ title, completed: args.completed ?? false, user_id: userId })
+        .insert({ title, completed: args.completed ?? false, user_id: userId, updated_at: new Date().toISOString() })
         .select("id, title").single();
       if (error) throw new Error(error.message);
       return mcpOk(reqId, { content: [{ type: "text", text: `Created: "${data.title}" (ID: ${data.id})` }] });
@@ -898,6 +898,7 @@ async function callTool(mcp: MCPReq, user: OAuthUser, reqId: string | number): P
       const update: Record<string, unknown> = {};
       if (args.title !== undefined) update.title = (args.title as string).trim();
       if (args.completed !== undefined) update.completed = args.completed;
+      update.updated_at = new Date().toISOString();
       const { data, error } = await db.from("todos")
         .update(update).eq("id", id).eq("user_id", userId)
         .select("title, completed").single();

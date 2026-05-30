@@ -134,8 +134,9 @@ Deno.serve(async (req: Request) => {
       user_id: userId,
       title: normalizedTitle,
       completed: completed ?? false,
+      updated_at: new Date().toISOString(),
     })
-    .select("id, title, completed, created_at")
+    .select("id, title, completed, created_at, updated_at")
     .single();
 
   if (error) {

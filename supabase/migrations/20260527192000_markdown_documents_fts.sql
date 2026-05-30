@@ -20,7 +20,7 @@ DROP INDEX IF EXISTS idx_markdown_documents_search;
 -- Results are ranked by relevance (ts_rank) then recency.
 -- Returns nothing if the query reduces to only stopwords (tsq IS NULL).
 CREATE OR REPLACE FUNCTION search_markdown_notes(uid uuid, q text)
-RETURNS TABLE(title text, content text, updated_at timestamptz)
+RETURNS TABLE(title text, content text, created_at timestamptz, updated_at timestamptz)
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
   tsq tsquery;
@@ -30,7 +30,7 @@ BEGIN
     RETURN;
   END IF;
   RETURN QUERY
-    SELECT md.title, md.content, md.updated_at
+    SELECT md.title, md.content, md.created_at, md.updated_at
     FROM public.markdown_documents md
     WHERE md.user_id = uid
       AND md.search_vector @@ tsq

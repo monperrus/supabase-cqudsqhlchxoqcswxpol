@@ -555,7 +555,7 @@ async function callNamedTool(
         return mcpOk(reqId, { content: [{ type: "text", text: `Updated note "${title}".` }] });
       } else {
         const { error } = await db.from("markdown_documents")
-          .insert({ title, content, user_id: user.id });
+          .insert({ title, content, user_id: user.id, updated_at: new Date().toISOString() });
         if (error) throw new Error(error.message);
         return mcpOk(reqId, { content: [{ type: "text", text: `Added note "${title}".` }] });
       }
@@ -582,7 +582,7 @@ async function callNamedTool(
       if (!title) return mcpErr(reqId, -32602, "title is required");
 
       const { data, error } = await db.from("markdown_documents")
-        .select("id, title, content, updated_at")
+        .select("id, title, content, created_at, updated_at")
         .eq("user_id", user.id)
         .ilike("title", title)
         .order("updated_at", { ascending: false })

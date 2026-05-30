@@ -9,12 +9,13 @@ A simple Todo API built on Supabase Edge Functions. Use it to create and list to
 
 A **todo** object has the following fields:
 
-| Field        | Type      | Description                              |
-|--------------|-----------|------------------------------------------|
-| id           | integer   | Auto-generated unique identifier         |
-| title        | string    | Title of the todo (non-empty)            |
-| completed    | boolean   | Whether the todo is done (default false) |
-| created_at   | timestamp | ISO 8601 UTC timestamp of creation       |
+| Field        | Type      | Description                                      |
+|--------------|-----------|--------------------------------------------------|
+| id           | integer   | Auto-generated unique identifier                 |
+| title        | string    | Title of the todo (non-empty)                    |
+| completed    | boolean   | Whether the todo is done (default false)         |
+| created_at   | timestamp | ISO 8601 UTC timestamp of creation               |
+| updated_at   | timestamp | ISO 8601 UTC timestamp of last create/update     |
 
 ## Endpoints
 
@@ -34,7 +35,8 @@ Retrieve all todo items in ascending order of creation.
       "id": 1,
       "title": "Buy groceries",
       "completed": false,
-      "created_at": "2026-04-18T19:30:00.000Z"
+      "created_at": "2026-04-18T19:30:00.000Z",
+      "updated_at": "2026-04-18T19:30:00.000Z"
     }
   ]
 }
@@ -71,7 +73,8 @@ Create a new todo item.
     "id": 1,
     "title": "Buy groceries",
     "completed": false,
-    "created_at": "2026-04-18T19:30:00.000Z"
+    "created_at": "2026-04-18T19:30:00.000Z",
+    "updated_at": "2026-04-18T19:30:00.000Z"
   }
 }
 \`\`\`

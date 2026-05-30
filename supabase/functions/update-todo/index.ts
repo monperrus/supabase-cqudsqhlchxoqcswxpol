@@ -124,6 +124,9 @@ Deno.serve(async (req: Request) => {
     updateData.completed = completed;
   }
 
+  // Always stamp updated_at on mutation
+  updateData.updated_at = new Date().toISOString();
+
   if (Object.keys(updateData).length === 0) {
     return jsonResponse(
       { error: "At least one field (title or completed) is required." },
@@ -153,7 +156,7 @@ Deno.serve(async (req: Request) => {
     .update(updateData)
     .eq("id", id)
     .eq("user_id", userId)
-    .select("id, title, completed, created_at")
+    .select("id, title, completed, created_at, updated_at")
     .single();
 
   if (error) {
