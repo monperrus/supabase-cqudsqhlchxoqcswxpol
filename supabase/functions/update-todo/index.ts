@@ -124,15 +124,14 @@ Deno.serve(async (req: Request) => {
     updateData.completed = completed;
   }
 
-  // Always stamp updated_at on mutation
-  updateData.updated_at = new Date().toISOString();
-
   if (Object.keys(updateData).length === 0) {
     return jsonResponse(
       { error: "At least one field (title or completed) is required." },
       400,
     );
   }
+
+  updateData.updated_at = new Date().toISOString();
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
